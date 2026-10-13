@@ -2279,4 +2279,155 @@ describe('Proxy Responses API previous_response_id', () => {
         expect(res.body.error.message).toContain('previous_response_id');
     });
 });
+
+describe('Proxy chat session affinity', () => {
+    beforeAll(() => {
+        process.env.OPENCODE_SERVER_URL = 'http://127.0.0.1:10001';
+        process.env.OPENCODE_PROXY_DEBUG = 'false';
+    });
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        let createdCount = 0;
+        sdkMocks.toolIds.mockResolvedValue({ data: ['web_fetch', 'filesystem', 'bash'] });
+        sdkMocks.sessionCreate.mockImplementation(async () => {
+            createdCount += 1;
+            return { data: { id: `test-session-${createdCount}` } };
+        });
+        sdkMocks.sessionPrompt.mockResolvedValue({ data: { parts: [{ type: 'text', text: 'Mock response' }] } });
+        sdkMocks.sessionMessages.mockResolvedValue([
+            {
+                info: { role: 'assistant', finish: 'stop' },
+                parts: [{ type: 'text', text: 'Mock response' }]
+            }
+        ]);
+        sdkMocks.sessionDelete.mockResolvedValue({});
+        const config = {
+            PORT: 10000,
+            API_KEY: 'test-key',
+            OPENCODE_SERVER_URL: 'http://127.0.0.1:10001',
+            REQUEST_TIMEOUT_MS: 5000,
+            DISABLE_TOOLS: false,
+            DEBUG: false,
+            CHAT_SESSION_AFFINITY: true
+        };
+        const result = createApp(config);
+        app = result.app;
+    });
+
+    test('resumes the session for an appending multi-turn client and sends only the new turn', async () => {
+        const first = await request(app)
+            .post('/v1/chat/completions')
+            .set('Authorization', 'Bearer test-key')
+            .send({ model: 'opencode/kimi-k2.5', messages: [{ role: 'user', content: 'Hi there' }] });
+        expect(first.statusCode).toEqual(200);
+        expect(sdkMocks.sessionCreate).toHaveBeenCalledTimes(1);
+        const firstPrompt = sdkMocks.sessionPrompt.mock.calls.at(-1)?.[0];
+        expect(firstPrompt.body.parts).toEqual([{ type: 'text', text: 'USER: Hi there' }]);
+
+        const second = await request(app)
+            .post('/v1/chat/completions')
+            .set('Authorization', 'Bearer test-key')
+            .send({
+                model: 'opencode/kimi-k2.5',
+                messages: [
+                    { role: 'user', content: 'Hi there' },
+                    { role: 'user', content: 'What did I just say?' }
+                ]
+            });
+        expect(second.statusCode).toEqual(200);
+        // No new session: the conversation continues on the same backend session.
+        expect(sdkMocks.sessionCreate).toHaveBeenCalledTimes(1);
+        const secondPrompt = sdkMocks.sessionPrompt.mock.calls.at(-1)?.[0];
+        expect(secondPrompt.path.id).toEqual('test-session-1');
+        // Only the new turn is appended to the session; the served prefix is not resent.
+        expect(secondPrompt.body.parts).toEqual([{ type: 'text', text: 'USER: What did I just say?' }]);
+        // Usage reports only what was sent upstream (the 'USER: ' prefixed part).
+        expect(second.body.usage.prompt_tokens).toEqual(Math.ceil('USER: What did I just say?'.length / 4));
+        expect(sdkMocks.sessionDelete).not.toHaveBeenCalled();
+    });
+
+    test('falls back to a fresh session when history was rewritten (assistant parts resent)', async () => {
+        await request(app)
+            .post('/v1/chat/completions')
+            .set('Authorization', 'Bearer test-key')
+            .send({ model: 'opencode/kimi-k2.5', messages: [{ role: 'user', content: 'Hi there' }] });
+
+        await request(app)
+            .post('/v1/chat/completions')
+            .set('Authorization', 'Bearer test-key')
+            .send({
+                model: 'opencode/kimi-k2.5',
+                messages: [
+                    { role: 'user', content: 'Hi there' },
+                    { role: 'assistant', content: 'Mock response' },
+                    { role: 'user', content: 'Continue' }
+                ]
+            });
+
+        // Assistant parts are not affinity-eligible: a second session with the full history.
+        expect(sdkMocks.sessionCreate).toHaveBeenCalledTimes(2);
+        const secondPrompt = sdkMocks.sessionPrompt.mock.calls.at(-1)?.[0];
+        expect(secondPrompt.path.id).not.toEqual('test-session-id');
+        expect(secondPrompt.body.parts.map((p) => p.text)).toEqual([
+            'USER: Hi there',
+            'ASSISTANT: Mock response',
+            'USER: Continue'
+        ]);
+    });
+
+    test('drops the affinity entry after a failed turn instead of resuming the poisoned session', async () => {
+        sdkMocks.sessionPrompt.mockRejectedValueOnce(new Error('backend exploded'));
+
+        await request(app)
+            .post('/v1/chat/completions')
+            .set('Authorization', 'Bearer test-key')
+            .send({ model: 'opencode/kimi-k2.5', messages: [{ role: 'user', content: 'Hi there' }] });
+
+        const third = await request(app)
+            .post('/v1/chat/completions')
+            .set('Authorization', 'Bearer test-key')
+            .send({
+                model: 'opencode/kimi-k2.5',
+                messages: [
+                    { role: 'user', content: 'Hi there' },
+                    { role: 'user', content: 'Next question' }
+                ]
+            });
+
+        expect(third.statusCode).toEqual(200);
+        // The poisoned session was dropped: the follow-up turn goes to a fresh session.
+        expect(sdkMocks.sessionCreate).toHaveBeenCalledTimes(2);
+        expect(sdkMocks.sessionDelete).toHaveBeenCalledWith({ path: { id: 'test-session-1' } });
+        // And the fresh session got the full history, not just the new turn.
+        const freshPrompt = sdkMocks.sessionPrompt.mock.calls.at(-1)?.[0];
+        expect(freshPrompt.path.id).toEqual('test-session-2');
+        expect(freshPrompt.body.parts.map((p) => p.text)).toEqual(['USER: Hi there', 'USER: Next question']);
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(sdkMocks.sessionDelete).toHaveBeenCalledWith({ path: { id: 'test-session-1' } });
+    });
+
+    test('stays on per-request sessions when CHAT_SESSION_AFFINITY is off', async () => {
+        const config = {
+            PORT: 10000,
+            API_KEY: 'test-key',
+            OPENCODE_SERVER_URL: 'http://127.0.0.1:10001',
+            REQUEST_TIMEOUT_MS: 5000,
+            DISABLE_TOOLS: false,
+            DEBUG: false,
+            CHAT_SESSION_AFFINITY: false
+        };
+        const result = createApp(config);
+        app = result.app;
+
+        for (const content of ['Hi there', 'And again']) {
+            await request(app)
+                .post('/v1/chat/completions')
+                .set('Authorization', 'Bearer test-key')
+                .send({ model: 'opencode/kimi-k2.5', messages: [{ role: 'user', content }] });
+        }
+        expect(sdkMocks.sessionCreate).toHaveBeenCalledTimes(2);
+    });
+});
 });

@@ -136,6 +136,7 @@ console.log(`  - OpenCode Path: ${finalConfig.OPENCODE_PATH}`);
 console.log(`  - API Key: ${finalConfig.API_KEY ? 'Configured' : 'Not configured (no auth)'}`);
 console.log(`  - Zen API Key: ${finalConfig.ZEN_API_KEY ? 'Configured' : 'Not configured'}`);
 console.log(`  - Disable Tools: ${finalConfig.DISABLE_TOOLS ? 'Yes' : 'No'}`);
+console.log(`  - Chat Session Affinity: ${finalConfig.CHAT_SESSION_AFFINITY ? 'Yes' : 'No (new session per request)'}`);
 console.log(`  - Manage Backend: ${finalConfig.MANAGE_BACKEND ? 'Yes' : 'No'}`);
 console.log(`  - External Tools Mode: ${finalConfig.EXTERNAL_TOOLS_MODE}`);
 console.log(`  - External Tools Conflict Policy: ${finalConfig.EXTERNAL_TOOLS_CONFLICT_POLICY}`);
