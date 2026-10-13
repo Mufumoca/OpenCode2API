@@ -539,6 +539,7 @@ export function createApp(config) {
         REQUEST_TIMEOUT_MS,
         DEBUG,
         DISABLE_TOOLS,
+        CHAT_SESSION_AFFINITY,
         INTERNAL_WEB_FETCH_ENABLED,
         INTERNAL_ALLOWED_TOOLS = [],
         INTERNAL_TOOL_METRICS_ENABLED = true,
@@ -1153,6 +1154,114 @@ export function createApp(config) {
 
     const sessionTitleForPolicy = (policy) => `opencode2api [tools:${policy}]`;
 
+    // Chat session affinity (CHAT_SESSION_AFFINITY). Multi-turn chat clients
+    // resend the whole history on every turn; instead of creating a fresh
+    // OpenCode session per request, the proxy keeps one backend session per
+    // conversation and appends only the new turns. Upstream prompt caches are
+    // keyed by session, so a resumed turn replays the cached prefix instead of
+    // paying for the full history again (live probes: ~99% cached tokens on a
+    // second turn). Entries expire and their sessions are swept like the
+    // responses state above.
+    const chatSessions = new Map();
+    const chatSessionActive = new Set();
+    const CHAT_SESSION_TTL_MS = 30 * 60 * 1000;
+    const CHAT_SESSION_SWEEP_INTERVAL_MS = 60 * 1000;
+    const chatSessionSignalOf = (req, body) => {
+        const explicit = req.headers?.['x-opencode-session']
+            || req.headers?.['x-session-id']
+            || req.headers?.['x-session-affinity']
+            || req.headers?.['conversation-id']
+            || body?.conversation_id
+            || body?.user;
+        if (explicit && typeof explicit === 'string') return `hdr:${explicit.slice(0, 200)}`;
+        const msgs = Array.isArray(body?.messages) ? body.messages : [];
+        for (const m of msgs) {
+            if (m?.role === 'user') {
+                // The FIRST user turn is stable across the turns of a
+                // conversation, so it identifies the conversation. (The last
+                // one changes every turn.)
+                return `first:${crypto.createHash('sha256').update(String(m?.content ?? '')).digest('hex')}`;
+            }
+        }
+        return null;
+    };
+    // A request is affinity-eligible only when its prompt is a pure sequence of
+    // user turns (an incremental client appending to a conversation). Returns
+    // the user turn texts, or null when assistant/tool/file parts are present
+    // (a client resending full history keeps the fresh-session semantics).
+    const chatUserTurnsOf = (parts) => {
+        if (!parts.length) return null;
+        const turns = [];
+        for (const part of parts) {
+            if (part?.type !== 'text' || typeof part.text !== 'string' || !part.text.startsWith('USER: ')) return null;
+            turns.push(part.text.slice(6));
+        }
+        return turns;
+    };
+    const chatSessionsSweep = async () => {
+        const now = Date.now();
+        const expired = [];
+        for (const [, state] of chatSessions.entries()) {
+            if (state.expiresAt <= now) expired.push(state);
+        }
+        for (const state of expired) {
+            if (chatSessions.get(state.signal) !== state) continue;
+            chatSessions.delete(state.signal);
+            if (chatSessionActive.has(state.sessionId)) continue;
+            chatSessionActive.delete(state.sessionId);
+            try {
+                await client.session.delete({ path: { id: state.sessionId } });
+            } catch (e) {
+                logDebug('Failed to delete expired chat session', { sessionId: state.sessionId, error: e.message });
+            }
+        }
+    };
+    const chatSessionEntryStore = (signal, sessionId, userTurns, systemWithGuard, toolPolicy, toolOverrides, model) => {
+        chatSessions.set(signal, {
+            signal,
+            sessionId,
+            userTurns,
+            system: systemWithGuard || '',
+            toolPolicy,
+            toolOverridesJson: JSON.stringify(toolOverrides ?? null),
+            model,
+            pending: true,
+            expiresAt: Date.now() + CHAT_SESSION_TTL_MS
+        });
+        chatSessionActive.add(sessionId);
+    };
+    const chatSessionEntryComplete = (signal, sessionId, userTurns) => {
+        const entry = chatSessions.get(signal);
+        if (!entry || entry.sessionId !== sessionId) return;
+        entry.userTurns = userTurns;
+        entry.pending = false;
+        entry.expiresAt = Date.now() + CHAT_SESSION_TTL_MS;
+        chatSessionActive.delete(sessionId);
+    };
+    // Map cleanup only; the caller deletes the backend session itself (the
+    // retry rotation already does).
+    const chatSessionEntryDrop = (signal, sessionId) => {
+        const entry = chatSessions.get(signal);
+        if (entry && entry.sessionId === sessionId) chatSessions.delete(signal);
+        chatSessionActive.delete(sessionId);
+    };
+    // Drops the affinity entry after a failed turn and deletes the backend
+    // session: it carries an errored exchange, so the next turn must not
+    // append to it.
+    const chatSessionEntryFail = async (signal, sessionId) => {
+        chatSessionEntryDrop(signal, sessionId);
+        try {
+            await client.session.delete({ path: { id: sessionId } });
+        } catch (e) {
+            logDebug('Failed to delete failed chat session', { sessionId, error: e.message });
+        }
+    };
+    if (!chatSessions.sweepTimer) {
+        const timer = setInterval(() => { chatSessionsSweep().catch(() => {}); }, CHAT_SESSION_SWEEP_INTERVAL_MS);
+        if (typeof timer.unref === 'function') timer.unref();
+        chatSessions.sweepTimer = timer;
+    }
+
     // Resolves how a request's tool policy reaches the backend: a session title
     // for the tool-lock plugin, or a `tools` override map as the fallback.
     const resolveToolControl = async (toolMode, internalContext = {}) => {
@@ -1590,6 +1699,9 @@ export function createApp(config) {
         try {
             await lock(async () => {
                 let sessionId = null;
+                // Set inside the try below; the catch must be able to read it to
+                // drop the affinity mapping when a turn fails mid-flight.
+                let affinitySignal = null;
                 let eventStream = null;
                 let stream = false;
                 let pID = 'opencode';
@@ -1790,7 +1902,58 @@ export function createApp(config) {
 
                     // Create session; with the tool-lock plugin its title carries the tool policy
                     const toolControl = await resolveToolControl(toolMode, internalToolContext);
-                    sessionId = await createSession(toolControl);
+
+                    // Session affinity: resume this conversation's backend session when the
+                    // client is appending turns (its prompt is the same user-turn sequence
+                    // the session already served, so the new turns are the suffix) and
+                    // system prompt, tool policy and model are unchanged. Anything else —
+                    // an assistant/tool rewrite, a policy switch, a model change, a
+                    // concurrent second turn, a reused signal — falls back to a fresh
+                    // session with the full history, which keeps the exact
+                    // pre-affinity semantics.
+                    let reuseSessionId = null;
+                    let reuseUserTurns = null;
+                    let reuseParts = null;
+                    let signal = null;
+                    if (CHAT_SESSION_AFFINITY) {
+                        signal = chatSessionSignalOf(req, req.body);
+                        if (signal) {
+                            const entry = chatSessions.get(signal);
+                            if (entry && entry.expiresAt > Date.now() && !entry.pending
+                                && entry.model === `${pID}/${mID}`
+                                && entry.system === (systemWithGuard || '')
+                                && entry.toolPolicy === toolControl.title
+                                && entry.toolOverridesJson === JSON.stringify(toolControl.toolOverrides ?? null)) {
+                                const turns = chatUserTurnsOf(parts);
+                                if (turns && turns.length > entry.userTurns.length
+                                    && entry.userTurns.every((t, i) => t === turns[i])) {
+                                    reuseSessionId = entry.sessionId;
+                                    reuseUserTurns = turns;
+                                    // Only the turns the session has not served yet go upstream;
+                                    // the recorded prefix is already in the session (and its
+                                    // upstream prompt cache).
+                                    reuseParts = parts.slice(entry.userTurns.length);
+                                }
+                            }
+                        }
+                    }
+
+                    if (reuseSessionId) {
+                        sessionId = reuseSessionId;
+                        logDebug('Chat session resumed', { sessionId });
+                    } else {
+                        sessionId = await createSession(toolControl);
+                        if (CHAT_SESSION_AFFINITY) {
+                            signal = signal || chatSessionSignalOf(req, req.body);
+                            if (signal) {
+                                const turns = chatUserTurnsOf(parts);
+                                if (turns) {
+                                    affinitySignal = signal;
+                                    chatSessionEntryStore(signal, sessionId, turns, systemWithGuard, toolControl.title, toolControl.toolOverrides, `${pID}/${mID}`);
+                                }
+                            }
+                        }
+                    }
                     logDebug('Session created', { sessionId });
 
                     id = `chatcmpl-${crypto.randomUUID()}`;
@@ -1808,8 +1971,8 @@ export function createApp(config) {
                             // the 16KB+ system prompt it gets buried; position matters a lot for
                             // compliance. deepseek-v4-flash-free: 50% → 100% call rate.
                             parts: externalToolContext.reminder
-                                ? [...parts, { type: 'text', text: externalToolContext.reminder }]
-                                : parts,
+                                ? [...(reuseParts || parts), { type: 'text', text: externalToolContext.reminder }]
+                                : (reuseParts || parts),
                             ...(requestParams.max_tokens && { max_tokens: requestParams.max_tokens }),
                             ...(requestParams.temperature !== undefined && { temperature: requestParams.temperature }),
                             ...(requestParams.top_p !== undefined && { top_p: requestParams.top_p }),
@@ -1872,6 +2035,7 @@ export function createApp(config) {
                                 ? parseReasoningToolCalls(delta)
                                 : parseContentToolCalls(delta);
                             parsedDeltaToolCalls.forEach((toolCall) => {
+                                streamToolCallsSeen = true;
                                 streamedToolCalls.push(toolCall);
                                 res.write(`data: ${JSON.stringify({
                                     id,
@@ -1921,12 +2085,14 @@ export function createApp(config) {
                         };
 
                         let collected = null;
+                        let streamToolCallsSeen = false;
                         for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt += 1) {
                             if (attempt > 1) {
                                 // Retry on a fresh session: the failed attempt left an errored
                                 // assistant message in the old one, and re-prompting the same
                                 // session would append a duplicate user turn to the context.
                                 // Safe to rotate because nothing has been streamed yet.
+                                if (affinitySignal) chatSessionEntryDrop(affinitySignal, sessionId);
                                 try {
                                     await client.session.delete({ path: { id: sessionId } });
                                 } catch (e) {
@@ -2104,8 +2270,17 @@ export function createApp(config) {
                         }
 
                         if (keepaliveInterval) clearInterval(keepaliveInterval);
-                        
-                        const promptTokens = Math.ceil((fullPromptText || '').length / 4);
+
+                        if (affinitySignal && !streamToolCallsSeen) {
+                            chatSessionEntryComplete(affinitySignal, sessionId, [...(reuseUserTurns || []), lastUserMsg]);
+                        } else if (affinitySignal) {
+                            chatSessionEntryFail(affinitySignal, sessionId);
+                        }
+                        // Usage reflects only what was sent upstream: a resumed
+                        // turn transmits just the new turns, not the history the
+                        // session's prompt cache already holds.
+                        const billedPromptText = reuseParts ? reuseParts.map((p) => p.text || '').join('\n\n') : fullPromptText;
+                        const promptTokens = Math.ceil((billedPromptText || '').length / 4);
                         const totalTokens = promptTokens + completionTokens + reasoningTokens;
                         
                         res.write(`data: ${JSON.stringify({ 
@@ -2131,6 +2306,7 @@ export function createApp(config) {
                                 // Retry on a fresh session: the failed attempt left an errored
                                 // assistant message in the old one, and re-prompting the same
                                 // session would append a duplicate user turn to the context.
+                                if (affinitySignal) chatSessionEntryDrop(affinitySignal, sessionId);
                                 try {
                                     await client.session.delete({ path: { id: sessionId } });
                                 } catch (e) {
@@ -2164,6 +2340,7 @@ export function createApp(config) {
                             break;
                         }
                         if (error && !content && !reasoning) {
+                            if (affinitySignal) await chatSessionEntryFail(affinitySignal, sessionId);
                             return res.status(502).json({
                                 error: {
                                     message: error.data?.message || error.message || 'OpenCode provider error',
@@ -2186,7 +2363,17 @@ export function createApp(config) {
                         const safeContent = stripFunctionCallMarkup(stripFunctionCalls(content));
                         const safeReasoning = stripFunctionCallMarkup(stripFunctionCalls(reasoning));
 
-                        const promptTokens = Math.ceil((fullPromptText || '').length / 4);
+                        if (affinitySignal && validatedToolCalls.length === 0) {
+                            chatSessionEntryComplete(affinitySignal, sessionId, [...(reuseUserTurns || []), lastUserMsg]);
+                        } else if (affinitySignal) {
+                            chatSessionEntryFail(affinitySignal, sessionId);
+                        }
+
+                        // Usage reflects only what was sent upstream: a resumed
+                        // turn transmits just the new turns, not the history the
+                        // session's prompt cache already holds.
+                        const billedPromptText = reuseParts ? reuseParts.map((p) => p.text || '').join('\n\n') : fullPromptText;
+                        const promptTokens = Math.ceil((billedPromptText || '').length / 4);
                         const completionTokensCalc = Math.ceil((content || '').length / 4);
                         const reasoningTokensCalc = Math.ceil((reasoning || '').length / 4);
                         const totalTokens = promptTokens + completionTokensCalc + reasoningTokensCalc;
@@ -2240,6 +2427,10 @@ export function createApp(config) {
                         res.end();
                     }
                     if (sessionId) {
+                        // With affinity on, an exception mid-turn also poisons the
+                        // backend session: drop the mapping before deleting so the
+                        // next turn starts a clean session with full history.
+                        if (affinitySignal) chatSessionEntryDrop(affinitySignal, sessionId);
                         try {
                             await client.session.delete({ path: { id: sessionId } });
                         } catch (e) {
@@ -3331,6 +3522,9 @@ export function startProxy(options) {
             normalizeBool(process.env.OPENCODE_PROXY_MANAGE_BACKEND) ??
             true,
         DISABLE_TOOLS: disableTools,
+        CHAT_SESSION_AFFINITY: normalizeBool(options.CHAT_SESSION_AFFINITY) ??
+            normalizeBool(process.env.OPENCODE_CHAT_SESSION_AFFINITY) ??
+            false,
         EXTERNAL_TOOLS_MODE: externalToolsMode,
         EXTERNAL_TOOLS_CONFLICT_POLICY: externalToolsConflictPolicy,
         INTERNAL_WEB_FETCH_ENABLED: normalizeBool(options.INTERNAL_WEB_FETCH_ENABLED) ??
