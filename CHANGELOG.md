@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-15
+
 ### Fixed
 
 - **Test Scripts**: `tests/integration/test-integration.sh` passed `OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH` / `OPENCODE_METRICS_REQUIRE_AUTH` / `OPENCODE_TOOL_DISCOVERY_FIXTURE`, which the proxy no longer reads (auth now via `OPENCODE_PUBLIC_DIAGNOSTICS`, fixture removed); it also hardcoded the docs placeholder `Authorization: Bearer ***` everywhere instead of `TEST_API_KEY`. `tests/manual/test-streaming-real.sh` had the same placeholder bug and defaulted to `opencode/kimi-k2.5`, which is no longer in the catalog (default now `opencode/cat-jam-free`, overridable via `TEST_MODEL`); its `-d '…'` payload also blocked shell expansion. Both scripts verified against a live proxy.
-- **Docs Precision (tool-lock)**: the Zen gate is a tool-list *shape* check against the official client (verbatim match), not a minimum tool count — documented with the 2026-10-15 probe result (stripped `tools:{id:false}` requests 403, bare requests without `tools` pass).
+- **User-Oriented Docs**: user docs no longer narrate implementation details or probe results — the tool-lock section explains the mechanism and its zero-config behavior from the user's perspective, and the 2.x troubleshooting entry states the symptom and fix instead of the API-migration backstory. READMEs credit the same-named jasonxu114514/opencode2api gateway in the acknowledgements.
 
 ### Removed
 

@@ -1,7 +1,7 @@
 # OpenCode2API
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.5.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/Node.js-18+-orange" alt="Node">
 </p>
@@ -9,23 +9,6 @@
 English | [简体中文](./README.md)
 
 Turns a local [OpenCode](https://opencode.ai) runtime into an OpenAI-compatible API gateway, so any client can use unlimited free OpenCode Zen models.
-
-## 🆚 Comparison with jasonxu114514/opencode2api
-
-There is another project with the same name, [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api): a Go gateway that talks to the OpenCode cloud service directly (single binary, built-in WebUI, multi-key/proxy pools, and an Anthropic Messages endpoint), aimed at shared multi-user operation. The two projects take different approaches:
-
-| | This project | jasonxu114514/opencode2api |
-|:---|:---|:---|
-| How it works | Runs the **real OpenCode CLI** locally and proxies its local API | Standalone Go gateway that emulates the official client against the cloud |
-| Free-model compatibility | Requests come from the official client itself — updating the backend keeps up with upstream policy changes | Relies on the project emulating official client behavior; needs project updates to catch up |
-| Runtime requirements | Node.js 18+ and the OpenCode CLI | None — a single Go binary |
-| API protocol | OpenAI-compatible (Chat Completions / Responses, with SSE) | OpenAI-compatible + Anthropic Messages |
-| Reasoning control | `reasoning_effort` passed through directly | `auto` probing mode (probe requests consume upstream allowance) |
-| Client-defined tools | Supported: the client declares `tools` and the proxy returns standard `tool_calls` | Forwarded (the anonymous free lane is constrained by the official tool-list validation) |
-| Multi-user operation | None (single-machine, personal use) | Key/proxy pools, WebUI console, per-key usage stats |
-| License | MIT | GPL-3.0 |
-
-**Which to pick**: for personal use, exact parity with official client behavior, or making your client's own tools work, use this project. For an Anthropic endpoint, sharing one gateway across several users (key pools + usage dashboard), or a zero-dependency single-binary deployment, use the jasonxu version. Both can also run side by side.
 
 ## ✨ Features
 
@@ -190,4 +173,5 @@ MIT · see [LICENSE](./LICENSE.md)
 ## 🙏 Acknowledgements
 
 - [dxxzst/opencode-to-openai](https://github.com/dxxzst/opencode-to-openai)
+- [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api) — the same-named Go gateway
 - [lucasliet/opencode-openai-proxy](https://github.com/lucasliet/opencode-openai-proxy)
