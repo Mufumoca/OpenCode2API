@@ -82,7 +82,7 @@ Env vars use the `OPENCODE_` prefix; config.json uses the short names (see table
 
 ### Tool-Lock Plugin
 
-OpenCode Zen free models fingerprint requests: the tool list must match the official client's **verbatim** (a list-shape check, not a minimum tool count). Live-tested 2026-10-15 against backend 1.19.0: a request that strips tools via `tools:{id:false}` is rejected (`free tier can only be used from within OpenCode`), while a bare request with no `tools` field at all passes. So the backend the proxy starts loads `plugin/opencode2api-tool-lock.js`: the tool list stays intact, the tool policy rides in the session title, and the plugin blocks tools at execution time.
+The OpenCode service rejects requests whose tool list has been modified (with the error `free tier can only be used from within OpenCode`). The proxy therefore loads `plugin/opencode2api-tool-lock.js` into the backend it starts automatically: the tool list stays intact, the tool policy rides in the session title, and the plugin blocks tools at execution time. No configuration needed.
 
 - With a backend you start yourself (`MANAGE_BACKEND=false`), add the absolute path of that file to the backend's `plugin` config. Otherwise the proxy falls back to per-request tool overrides and free models are rejected.
 

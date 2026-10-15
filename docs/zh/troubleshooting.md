@@ -53,14 +53,14 @@ npm install -g opencode-ai@1.19.0
 
 ### 模型列表为空 / 补全报错，日志出现 `/config/providers` 失败
 
-后端是 OpenCode 2.x。2.x 把 server API 挪到了 `/api/*` 下并移除了 1.x 路由，与本代理内置的 SDK 1.x 不兼容（代理启动时会在健康检查处直接报 `OpenCode backend 2.x is not compatible`）。降到 1.x 线最新版：
+后端装的是 OpenCode 2.x。本代理目前仅兼容 OpenCode 1.x 后端，检测到 2.x 会在启动时报 `OpenCode backend 2.x is not compatible`。安装 1.x 线最新版：
 
 ```bash
 npm install -g opencode-ai@1.19.0
 # 或 OPENCODE_PATH 指向 1.x 二进制
 ```
 
-注意 2.x 没有可用的 JS SDK，在后端适配 2.x 之前请勿升级。
+在代理支持 2.x 之前，请保持 OpenCode 为 1.x，不要升级。
 
 ### Docker 容器无法启动
 

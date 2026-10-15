@@ -53,14 +53,14 @@ You can also point to the full binary path via `OPENCODE_PATH`.
 
 ### Empty model list / completions fail, logs show `/config/providers` errors
 
-The backend is OpenCode 2.x. 2.x moved the server API under `/api/*` and removed the 1.x routes used by the bundled SDK, so it is incompatible with this proxy (the proxy rejects it at startup: `OpenCode backend 2.x is not compatible`). Downgrade to the newest 1.x release:
+The installed backend is OpenCode 2.x. This proxy currently supports OpenCode 1.x backends only and refuses 2.x at startup with `OpenCode backend 2.x is not compatible`. Install the newest 1.x release:
 
 ```bash
 npm install -g opencode-ai@1.19.0
 # or point OPENCODE_PATH at a 1.x binary
 ```
 
-There is no JS SDK for 2.x yet; do not upgrade the backend until the proxy supports it.
+Keep OpenCode on 1.x and do not upgrade until the proxy announces 2.x support.
 
 ### Docker container fails to start
 

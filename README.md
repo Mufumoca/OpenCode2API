@@ -10,6 +10,23 @@
 
 把本地 [OpenCode](https://opencode.ai) 运行时转换为 OpenAI 兼容 API 网关，在任何客户端中使用不限量的 OpenCode Zen 免费模型。
 
+## 🆚 与 jasonxu114514/opencode2api 的对比
+
+社区里还有另一个同名项目 [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api)：一个直连 OpenCode 云端服务的 Go 网关（单二进制、内置 WebUI、支持多 key/代理池和 Anthropic Messages 端点），面向多用户共享运营。两者目标不同：
+
+| | 本项目 | jasonxu114514/opencode2api |
+|:---|:---|:---|
+| 工作方式 | 运行**真实的 OpenCode CLI** 并代理其本地接口 | 独立 Go 网关，直接模拟官方客户端请求云端 |
+| 免费模型兼容性 | 请求由官方客户端本体发出，官方策略变化时升级后端即可跟进 | 依赖项目代码模拟官方客户端行为，需等项目发布更新 |
+| 运行依赖 | Node.js 18+ 与 OpenCode CLI | 无，单个 Go 二进制 |
+| API 协议 | OpenAI 兼容（Chat Completions / Responses，含 SSE） | OpenAI 兼容 + Anthropic Messages |
+| 推理控制 | `reasoning_effort` 直接透传 | `auto` 探测模式（探测请求会消耗上游额度） |
+| 客户端自定义工具 | 支持：客户端声明 `tools`，代理返回标准 `tool_calls` | 支持转发（匿名免费通道受官方工具列表校验约束） |
+| 多用户运营能力 | 无（单机自用定位） | key 池/代理池、WebUI 管理台、按 key 用量统计 |
+| 许可证 | MIT | GPL-3.0 |
+
+**怎么选**：个人使用、希望与官方客户端行为完全一致、或需要让客户端自带工具生效，选本项目；需要 Anthropic 端点、多人共享一个网关（key 池 + 配额面板）、或想要零依赖的单二进制部署，选 jasonxu 版。两者也可以并存部署。
+
 ## ✨ 功能特性
 
 - **OpenAI 兼容** — `/v1/models`、`/v1/chat/completions`、`/v1/responses`，完整 SSE 流式输出
