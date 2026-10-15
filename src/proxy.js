@@ -12,7 +12,6 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { buildExternalToolRegistry, findExternalToolByName } from './tool-runtime/registry.js';
 import { buildToolExposure } from './tool-runtime/router.js';
-import { evaluateToolPolicy } from './tool-runtime/policy.js';
 import { validateToolCalls } from './tool-runtime/validator.js';
 import {
     stripFunctionCallMarkup,
@@ -558,15 +557,10 @@ export function createApp(config) {
         DEBUG,
         DISABLE_TOOLS,
         CHAT_SESSION_AFFINITY,
-        INTERNAL_WEB_FETCH_ENABLED,
         INTERNAL_ALLOWED_TOOLS = [],
-        INTERNAL_TOOL_METRICS_ENABLED = true,
-        INTERNAL_TOOL_DISCOVERY_FIXTURE = [],
         HEALTH_DETAILS_ENABLED = true,
-        HEALTH_DETAILS_REQUIRE_AUTH = true,
         METRICS_ENABLED = false,
-        METRICS_REQUIRE_AUTH = true,
-        PROMPT_MODE,
+        PUBLIC_DIAGNOSTICS = false,
         OMIT_SYSTEM_PROMPT,
         AUTO_CLEANUP_CONVERSATIONS,
         CLEANUP_INTERVAL_MS,
@@ -587,16 +581,6 @@ export function createApp(config) {
 
     const clientHeaders = buildBackendAuthHeaders(OPENCODE_SERVER_PASSWORD);
     const client = createOpencodeClient({ baseUrl: OPENCODE_SERVER_URL, headers: clientHeaders });
-
-    const isOperationalEndpointBypassed = (req) => {
-        if (req.path === '/health/details') {
-            return HEALTH_DETAILS_ENABLED && !HEALTH_DETAILS_REQUIRE_AUTH;
-        }
-        if (req.path === '/metrics') {
-            return METRICS_ENABLED && !METRICS_REQUIRE_AUTH;
-        }
-        return false;
-    };
 
     // Auth middleware
     app.use((req, res, next) => {
@@ -763,12 +747,7 @@ export function createApp(config) {
             .filter(Boolean)
     )];
 
-    const getEffectiveInternalAllowedTools = () => {
-        const configuredTools = normalizeConfiguredToolNames(INTERNAL_ALLOWED_TOOLS);
-        if (configuredTools.length > 0) return configuredTools;
-        if (INTERNAL_WEB_FETCH_ENABLED) return ['web_fetch'];
-        return [];
-    };
+    const getEffectiveInternalAllowedTools = () => normalizeConfiguredToolNames(INTERNAL_ALLOWED_TOOLS);
 
     const SERVER_INTERNAL_ALLOWED_TOOL_NAMES = getEffectiveInternalAllowedTools();
 
@@ -789,7 +768,7 @@ export function createApp(config) {
         }
         if (toolMode === TOOL_MODE.INTERNAL_ALLOWLIST) {
             parts.push(buildInternalAllowlistPrompt(internalAllowedTools));
-        } else if (DISABLE_TOOLS && PROMPT_MODE !== 'plugin-inject') {
+        } else if (DISABLE_TOOLS) {
             parts.push(toolMode === TOOL_MODE.EXTERNAL_BRIDGE ? EXTERNAL_TOOL_GUARD_MESSAGE : TOOL_GUARD_MESSAGE);
         }
         const finalPrompt = parts.join('\n\n').trim();
@@ -917,8 +896,7 @@ export function createApp(config) {
                 requestedAllowlist: requestInternalAllowlist,
                 deniedRequestedTools,
                 resolutionPath: requestInternalAllowlist ? 'request-intersection' : 'server-default',
-                resultingMode: mode,
-                metricsEnabled: INTERNAL_TOOL_METRICS_ENABLED
+                resultingMode: mode
             }
         };
 
@@ -931,8 +909,7 @@ export function createApp(config) {
                 requestedAllowlist: requestInternalAllowlist,
                 deniedRequestedTools,
                 resolutionPath: requestInternalAllowlist ? 'request-intersection' : 'server-default',
-                resultingMode: mode,
-                metricsEnabled: INTERNAL_TOOL_METRICS_ENABLED
+                resultingMode: mode
             }
         };
     };
@@ -945,20 +922,7 @@ export function createApp(config) {
                 errors: validation?.errors?.map((error) => error.message)
             });
         });
-        const allowedCalls = [];
-        validCalls.forEach((toolCall) => {
-            const policyDecision = evaluateToolPolicy(toolCall.tool, toolCall.validatedArguments, { config });
-            if (policyDecision.status === 'allow') {
-                allowedCalls.push(toolCall);
-                return;
-            }
-            logDebug('Blocked external tool call', {
-                tool: toolCall.function.name,
-                status: policyDecision.status,
-                reason: policyDecision.reason
-            });
-        });
-        return { validCalls: allowedCalls, invalidCalls };
+        return { validCalls, invalidCalls };
     };
 
     const toPublicToolCalls = (toolCalls) => {
@@ -1018,14 +982,12 @@ export function createApp(config) {
     };
 
     const logInternalToolEvent = (event, details = {}) => {
-        if (!DEBUG && !INTERNAL_TOOL_METRICS_ENABLED) return;
+        if (!DEBUG) return;
         const payload = {
             event,
             ...details
         };
-        if (INTERNAL_TOOL_METRICS_ENABLED) {
-            payload.metrics = { ...internalToolMetrics };
-        }
+        payload.metrics = { ...internalToolMetrics };
         logDebug('Internal tool event', payload);
     };
 
@@ -1046,13 +1008,6 @@ export function createApp(config) {
     const getBackendToolIds = async () => {
         if (cachedToolIds && Date.now() - cachedToolIdsAt < TOOL_IDS_CACHE_MS) {
             return cachedToolIds;
-        }
-        const fixtureIds = normalizeConfiguredToolNames(INTERNAL_TOOL_DISCOVERY_FIXTURE);
-        if (fixtureIds.length > 0) {
-            cachedToolIds = fixtureIds;
-            cachedToolIdsAt = Date.now();
-            logInternalToolEvent('backend-tool-ids-fixture-loaded', { count: fixtureIds.length, fixtureIds });
-            return fixtureIds;
         }
         try {
             const idsRes = await client.tool.ids();
@@ -2476,9 +2431,9 @@ export function createApp(config) {
         return Boolean(authHeader && authHeader === `Bearer ${API_KEY}`);
     };
 
-    const shouldAllowOperationalEndpoint = (req, { enabled, requireAuth }) => {
+    const shouldAllowOperationalEndpoint = (req, { enabled }) => {
         if (!enabled) return false;
-        if (!requireAuth) return true;
+        if (PUBLIC_DIAGNOSTICS) return true;
         return hasValidBearerAuth(req);
     };
 
@@ -2488,23 +2443,18 @@ export function createApp(config) {
     }));
 
     app.get('/health/details', (req, res) => {
-        if (!shouldAllowOperationalEndpoint(req, {
-            enabled: HEALTH_DETAILS_ENABLED,
-            requireAuth: HEALTH_DETAILS_REQUIRE_AUTH
-        })) {
+        if (!shouldAllowOperationalEndpoint(req, { enabled: HEALTH_DETAILS_ENABLED })) {
             return res.status(HEALTH_DETAILS_ENABLED ? 401 : 404).json({
                 error: { message: HEALTH_DETAILS_ENABLED ? 'Unauthorized' : 'Not found' }
             });
         }
-        const metricsSnapshot = INTERNAL_TOOL_METRICS_ENABLED ? { ...internalToolMetrics } : null;
+        const metricsSnapshot = { ...internalToolMetrics };
         res.json({
             status: 'ok',
             proxy: true,
             internal_tools: {
                 config: {
-                    allowed_tools: SERVER_INTERNAL_ALLOWED_TOOL_NAMES,
-                    metrics_enabled: INTERNAL_TOOL_METRICS_ENABLED,
-                    discovery_fixture: normalizeConfiguredToolNames(INTERNAL_TOOL_DISCOVERY_FIXTURE)
+                    allowed_tools: SERVER_INTERNAL_ALLOWED_TOOL_NAMES
                 },
                 metrics: metricsSnapshot,
                 cache: {
@@ -2527,10 +2477,7 @@ export function createApp(config) {
     });
 
     app.get('/metrics', (req, res) => {
-        if (!shouldAllowOperationalEndpoint(req, {
-            enabled: METRICS_ENABLED,
-            requireAuth: METRICS_REQUIRE_AUTH
-        })) {
+        if (!shouldAllowOperationalEndpoint(req, { enabled: METRICS_ENABLED })) {
             return res.status(METRICS_ENABLED ? 401 : 404).send(METRICS_ENABLED ? 'Unauthorized' : 'Not found');
         }
 
@@ -3288,8 +3235,7 @@ async function ensureBackend(config) {
         USE_ISOLATED_HOME,
         ZEN_API_KEY,
         OPENCODE_SERVER_PASSWORD,
-        MANAGE_BACKEND,
-        PROMPT_MODE
+        MANAGE_BACKEND
     } = config;
     const stateKey = OPENCODE_SERVER_URL;
 
@@ -3408,22 +3354,6 @@ async function ensureBackend(config) {
                     OPENCODE_PROJECT_DIR: workspace
                 };
 
-                if (PROMPT_MODE === 'plugin-inject') {
-                    const configDir = path.join(fakeHome, '.config', 'opencode');
-                    const pluginDir = path.join(configDir, 'plugin', 'opencode2api-empty');
-                    fs.mkdirSync(pluginDir, { recursive: true });
-                    fs.writeFileSync(path.join(pluginDir, 'index.js'), `export const Opencode2apiEmptyPlugin = async () => ({})\nexport default Opencode2apiEmptyPlugin\n`, 'utf8');
-                    fs.writeFileSync(
-                        path.join(configDir, 'opencode.json'),
-                        JSON.stringify({
-                            plugin: [path.join(pluginDir, 'index.js')],
-                            instructions: [],
-                            theme: 'system'
-                        }, null, 2),
-                        'utf8'
-                    );
-                    console.log('[Proxy] Using plugin-inject prompt mode');
-                }
                 console.log('[Proxy] Using isolated home for OpenCode');
             } else {
                 envVars = {
@@ -3509,18 +3439,8 @@ export function startProxy(options) {
         normalizeBool(process.env.OPENCODE_DISABLE_TOOLS) ??
         false;
 
-    const promptMode = options.PROMPT_MODE || options.promptMode || process.env.OPENCODE_PROXY_PROMPT_MODE || 'standard';
-    const externalToolsMode = options.EXTERNAL_TOOLS_MODE || options.externalToolsMode || process.env.OPENCODE_EXTERNAL_TOOLS_MODE || 'proxy-bridge';
-    const externalToolsConflictPolicy = options.EXTERNAL_TOOLS_CONFLICT_POLICY || options.externalToolsConflictPolicy || process.env.OPENCODE_EXTERNAL_TOOLS_CONFLICT_POLICY || 'namespace';
     const cleanupIntervalMs = Number(options.CLEANUP_INTERVAL_MS || process.env.OPENCODE_PROXY_CLEANUP_INTERVAL_MS || 12 * 60 * 60 * 1000);
     const cleanupMaxAgeMs = Number(options.CLEANUP_MAX_AGE_MS || process.env.OPENCODE_PROXY_CLEANUP_MAX_AGE_MS || 24 * 60 * 60 * 1000);
-
-    if (externalToolsMode !== 'proxy-bridge') {
-        throw new Error(`Unsupported EXTERNAL_TOOLS_MODE: ${externalToolsMode}. Supported value: proxy-bridge`);
-    }
-    if (externalToolsConflictPolicy !== 'namespace') {
-        throw new Error(`Unsupported EXTERNAL_TOOLS_CONFLICT_POLICY: ${externalToolsConflictPolicy}. Supported value: namespace`);
-    }
 
     const config = {
         PORT: options.PORT || 10000,
@@ -3543,45 +3463,28 @@ export function startProxy(options) {
         CHAT_SESSION_AFFINITY: normalizeBool(options.CHAT_SESSION_AFFINITY) ??
             normalizeBool(process.env.OPENCODE_CHAT_SESSION_AFFINITY) ??
             false,
-        EXTERNAL_TOOLS_MODE: externalToolsMode,
-        EXTERNAL_TOOLS_CONFLICT_POLICY: externalToolsConflictPolicy,
-        INTERNAL_WEB_FETCH_ENABLED: normalizeBool(options.INTERNAL_WEB_FETCH_ENABLED) ??
-            normalizeBool(process.env.OPENCODE_INTERNAL_WEB_FETCH_ENABLED) ??
-            false,
         INTERNAL_ALLOWED_TOOLS: Array.isArray(options.INTERNAL_ALLOWED_TOOLS)
             ? options.INTERNAL_ALLOWED_TOOLS
             : typeof process.env.OPENCODE_INTERNAL_ALLOWED_TOOLS === 'string'
                 ? process.env.OPENCODE_INTERNAL_ALLOWED_TOOLS.split(',').map(entry => entry.trim()).filter(Boolean)
                 : [],
-        INTERNAL_TOOL_METRICS_ENABLED: normalizeBool(options.INTERNAL_TOOL_METRICS_ENABLED) ??
-            normalizeBool(process.env.OPENCODE_INTERNAL_TOOL_METRICS_ENABLED) ??
-            true,
-        INTERNAL_TOOL_DISCOVERY_FIXTURE: Array.isArray(options.INTERNAL_TOOL_DISCOVERY_FIXTURE)
-            ? options.INTERNAL_TOOL_DISCOVERY_FIXTURE
-            : typeof process.env.OPENCODE_TOOL_DISCOVERY_FIXTURE === 'string'
-                ? process.env.OPENCODE_TOOL_DISCOVERY_FIXTURE.split(',').map(entry => entry.trim()).filter(Boolean)
-                : [],
         HEALTH_DETAILS_ENABLED: normalizeBool(options.HEALTH_DETAILS_ENABLED) ??
             normalizeBool(process.env.OPENCODE_HEALTH_DETAILS_ENABLED) ??
-            true,
-        HEALTH_DETAILS_REQUIRE_AUTH: normalizeBool(options.HEALTH_DETAILS_REQUIRE_AUTH) ??
-            normalizeBool(process.env.OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH) ??
             true,
         METRICS_ENABLED: normalizeBool(options.METRICS_ENABLED) ??
             normalizeBool(process.env.OPENCODE_METRICS_ENABLED) ??
             false,
-        METRICS_REQUIRE_AUTH: normalizeBool(options.METRICS_REQUIRE_AUTH) ??
-            normalizeBool(process.env.OPENCODE_METRICS_REQUIRE_AUTH) ??
-            true,
+        PUBLIC_DIAGNOSTICS: normalizeBool(options.PUBLIC_DIAGNOSTICS) ??
+            normalizeBool(process.env.OPENCODE_PUBLIC_DIAGNOSTICS) ??
+            false,
         DEBUG: String(options.DEBUG || '').toLowerCase() === 'true' ||
             options.DEBUG === '1' ||
             String(process.env.OPENCODE_PROXY_DEBUG || '').toLowerCase() === 'true' ||
             process.env.OPENCODE_PROXY_DEBUG === '1',
         ZEN_API_KEY: options.ZEN_API_KEY || process.env.OPENCODE_ZEN_API_KEY || '',
-        PROMPT_MODE: promptMode,
         OMIT_SYSTEM_PROMPT: normalizeBool(options.OMIT_SYSTEM_PROMPT) ??
             normalizeBool(process.env.OPENCODE_PROXY_OMIT_SYSTEM_PROMPT) ??
-            promptMode === 'plugin-inject',
+            false,
         AUTO_CLEANUP_CONVERSATIONS: normalizeBool(options.AUTO_CLEANUP_CONVERSATIONS) ??
             normalizeBool(process.env.OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS) ??
             false,

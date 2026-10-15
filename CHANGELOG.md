@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Removed
+
+- **Dead External-Tool Policy Layer**: The risk-level / side-effect / confirmation machinery in `tool-runtime/policy.js` had no configuration entry point (`EXTERNAL_TOOL_POLICY_MODE`, `EXTERNAL_TOOL_DENYLIST`, `x_proxy_*` metadata were never read from env, config.json, or docs), and because "write"-shaped tool names (`create_*`, `send_*`, `delete_*` …) were inferred as high-risk, those client tool calls were silently swallowed in production — the client declared a tool and never received `tool_calls`. Deleted the layer, `plugin/tool-lock.js` (9-line stub superseded by `plugin/opencode2api-tool-lock.js`), and the unused `buildExternalToolsReminder` / `createRegistryIndex` helpers. Tool calls now flow straight from validation back to the client.
+- **Single-Value Config Knobs**: `EXTERNAL_TOOLS_MODE` (only value: `proxy-bridge`) and `EXTERNAL_TOOLS_CONFLICT_POLICY` (only value: `namespace`) threw on anything but their sole legal value — pure noise. Removed; namespace isolation stays as the implementation detail it already was.
+- **`PROMPT_MODE` / `plugin-inject`**: Only effect was skipping the guard-message prompt and writing an empty plugin into the backend home; `OMIT_SYSTEM_PROMPT` already covers the observable behavior. Removed; set `OPENCODE_PROXY_OMIT_SYSTEM_PROMPT=true` instead.
+- **Test-Only & Redundant Switches**: `OPENCODE_TOOL_DISCOVERY_FIXTURE` (test fixture), `OPENCODE_INTERNAL_WEB_FETCH_ENABLED` (legacy alias — put `web_fetch` in `OPENCODE_INTERNAL_ALLOWED_TOOLS`), `OPENCODE_INTERNAL_TOOL_METRICS_ENABLED` (metrics now always emitted with DEBUG logs), `OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH` + `OPENCODE_METRICS_REQUIRE_AUTH` (merged into one `OPENCODE_PUBLIC_DIAGNOSTICS`; both endpoints keep defaulting to Bearer auth).
+
+### Changed
 
 - **Chat Session Affinity (`CHAT_SESSION_AFFINITY` / `OPENCODE_CHAT_SESSION_AFFINITY`, default off)**: `/v1/chat/completions` previously created a fresh OpenCode session for every request, so each turn of a multi-turn conversation paid for the full history again. When enabled, requests whose prompt is a pure sequence of user turns and that extend the conversation's recorded turn sequence resume the same backend session and append only the new turns, so upstream prompt caches hit (live probes: ~99% cached tokens on a second turn). Requests with assistant/tool parts, a changed system prompt, tool policy, or model, a concurrent second turn, or a failed turn fall back to a fresh session with the full history — same output semantics as before. Affinity sessions expire after 30 minutes of inactivity and are deleted.
 

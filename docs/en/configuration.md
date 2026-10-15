@@ -27,19 +27,13 @@ Env vars use the `OPENCODE_` prefix; config.json uses the short names (see table
 |:---------|:------------|:-------|:-----|
 | `OPENCODE_DISABLE_TOOLS` | `DISABLE_TOOLS` | `true` | Disable OpenCode built-in tools |
 | `OPENCODE_CHAT_SESSION_AFFINITY` | `CHAT_SESSION_AFFINITY` | `false` | Reuse one backend session per multi-turn chat conversation |
-| `OPENCODE_EXTERNAL_TOOLS_MODE` | `EXTERNAL_TOOLS_MODE` | `proxy-bridge` | External tool bridge mode, only `proxy-bridge` is supported |
-| `OPENCODE_EXTERNAL_TOOLS_CONFLICT_POLICY` | `EXTERNAL_TOOLS_CONFLICT_POLICY` | `namespace` | Same-name conflict isolation policy, only `namespace` is supported |
-| `OPENCODE_INTERNAL_ALLOWED_TOOLS` | `INTERNAL_ALLOWED_TOOLS` | (empty) | Built-in tools allowed when request has no `tools`, comma-separated |
-| `OPENCODE_INTERNAL_WEB_FETCH_ENABLED` | `INTERNAL_WEB_FETCH_ENABLED` | `false` | Legacy switch: allows `web_fetch` by default when no allowlist is set |
-| `OPENCODE_INTERNAL_TOOL_METRICS_ENABLED` | `INTERNAL_TOOL_METRICS_ENABLED` | `true` | Emit allowlist mode debug/metrics logs |
-| `OPENCODE_TOOL_DISCOVERY_FIXTURE` | `INTERNAL_TOOL_DISCOVERY_FIXTURE` | (empty) | Fixed backend tool ID list for tests/debug, comma-separated |
+| `OPENCODE_INTERNAL_ALLOWED_TOOLS` | `INTERNAL_ALLOWED_TOOLS` | (empty) | Built-in tools allowed when request has no `tools`, comma-separated (e.g. `web_fetch`) |
 
 ### Prompts & Sessions
 
 | Env var | config.json | Default | Description |
 |:---------|:------------|:-------|:-----|
-| `OPENCODE_PROXY_PROMPT_MODE` | `PROMPT_MODE` | `standard` | `standard` or `plugin-inject` |
-| `OPENCODE_PROXY_OMIT_SYSTEM_PROMPT` | `OMIT_SYSTEM_PROMPT` | `false` | Ignore incoming system prompt |
+| `OPENCODE_PROXY_OMIT_SYSTEM_PROMPT` | `OMIT_SYSTEM_PROMPT` | `false` | Ignore the incoming system prompt |
 | `OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS` | `AUTO_CLEANUP_CONVERSATIONS` | `false` | Auto clean session storage |
 | `OPENCODE_PROXY_CLEANUP_INTERVAL_MS` | `CLEANUP_INTERVAL_MS` | `43200000` | Cleanup interval (ms) |
 | `OPENCODE_PROXY_CLEANUP_MAX_AGE_MS` | `CLEANUP_MAX_AGE_MS` | `86400000` | Max session age (ms) |
@@ -50,9 +44,8 @@ Env vars use the `OPENCODE_` prefix; config.json uses the short names (see table
 | Env var | config.json | Default | Description |
 |:---------|:------------|:-------|:-----|
 | `OPENCODE_HEALTH_DETAILS_ENABLED` | `HEALTH_DETAILS_ENABLED` | `true` | Expose `/health/details` |
-| `OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH` | `HEALTH_DETAILS_REQUIRE_AUTH` | `true` | `/health/details` requires Bearer auth |
 | `OPENCODE_METRICS_ENABLED` | `METRICS_ENABLED` | `false` | Expose `/metrics` |
-| `OPENCODE_METRICS_REQUIRE_AUTH` | `METRICS_REQUIRE_AUTH` | `true` | `/metrics` requires Bearer auth |
+| `OPENCODE_PUBLIC_DIAGNOSTICS` | `PUBLIC_DIAGNOSTICS` | `false` | `true` makes `/health/details` and `/metrics` public (default: Bearer auth) |
 | `OPENCODE_PROXY_DEBUG` | `DEBUG` | `false` | Debug logs |
 | `OPENCODE2API_EVENT_FIRST_DELTA_TIMEOUT_MS` | - | `30000` | First-delta timeout for streaming |
 | `OPENCODE2API_EVENT_IDLE_TIMEOUT_MS` | - | `8000` | Idle timeout for streaming |
@@ -65,12 +58,8 @@ Env vars use the `OPENCODE_` prefix; config.json uses the short names (see table
     "API_KEY": "your-secret-api-key",
     "BIND_HOST": "0.0.0.0",
     "DISABLE_TOOLS": true,
-    "EXTERNAL_TOOLS_MODE": "proxy-bridge",
-    "EXTERNAL_TOOLS_CONFLICT_POLICY": "namespace",
     "INTERNAL_ALLOWED_TOOLS": ["web_fetch"],
-    "INTERNAL_TOOL_METRICS_ENABLED": true,
     "USE_ISOLATED_HOME": false,
-    "PROMPT_MODE": "standard",
     "OMIT_SYSTEM_PROMPT": false,
     "AUTO_CLEANUP_CONVERSATIONS": false,
     "CLEANUP_INTERVAL_MS": 43200000,
@@ -101,8 +90,7 @@ OpenCode Zen free models only accept requests whose tool list matches the offici
 
 - When a request has **no** `tools`, the proxy enters internal allowlist mode. Only tools in `OPENCODE_INTERNAL_ALLOWED_TOOLS` are allowed.
 - Tool names are compared ignoring case and underscores, so `web_fetch` matches OpenCode's `webfetch`.
-- `OPENCODE_INTERNAL_WEB_FETCH_ENABLED=true` is a legacy shortcut: treated as `web_fetch` when no allowlist is set.
-- With `OPENCODE_INTERNAL_TOOL_METRICS_ENABLED=true`, mode selection, tool discovery, match results, and fallback reasons are logged. Tool return content is not logged.
+- Tool mode selection, tool discovery, and match results are logged at DEBUG level (`OPENCODE_PROXY_DEBUG=true`). Tool return content is not logged.
 
 ### Request-level Allowlist Override
 
@@ -121,7 +109,7 @@ When a request has no `tools`, `opencode.internal_allowed_tools` in the request 
 ## 📊 Health Diagnostics & Metrics
 
 - `/health` is always a lightweight check.
-- `/health/details` returns structured diagnostic JSON (`404` when `OPENCODE_HEALTH_DETAILS_ENABLED=false`, auth required when `OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH=true`):
+- `/health/details` returns structured diagnostic JSON (`404` when `OPENCODE_HEALTH_DETAILS_ENABLED=false`; Bearer auth by default, public with `OPENCODE_PUBLIC_DIAGNOSTICS=true`):
 
 ```json
 {
@@ -129,9 +117,7 @@ When a request has no `tools`, `opencode.internal_allowed_tools` in the request 
   "proxy": true,
   "internal_tools": {
     "config": {
-      "allowed_tools": ["web_fetch"],
-      "metrics_enabled": true,
-      "discovery_fixture": []
+      "allowed_tools": ["web_fetch"]
     },
     "metrics": {
       "externalBridgeRequests": 12,
@@ -160,13 +146,6 @@ opencode_internal_tool_fallback_disabled_total
 opencode_internal_tool_cache_ids
 ```
 
-## 🎯 Prompt Mode
-
-| Mode | Description |
-|:-----|:-----|
-| `standard` (default) | Standard mode, full prompt handling |
-| `plugin-inject` | Plugin-inject mode, smaller model-side prompt, usually used with `OMIT_SYSTEM_PROMPT=true` |
-
 ## ⭐ Recommended Configs
 
 ### Docker Production
@@ -176,7 +155,6 @@ API_KEY=your-secret-key
 OPENCODE_SERVER_PASSWORD=your-password
 OPENCODE_DISABLE_TOOLS=true
 OPENCODE_INTERNAL_ALLOWED_TOOLS=web_fetch
-OPENCODE_PROXY_PROMPT_MODE=plugin-inject
 OPENCODE_PROXY_OMIT_SYSTEM_PROMPT=true
 OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS=true
 ```

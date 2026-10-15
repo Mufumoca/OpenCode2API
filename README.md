@@ -114,7 +114,6 @@ curl -X POST http://127.0.0.1:10000/v1/chat/completions \
 | `OPENCODE_SERVER_URL` | `http://127.0.0.1:10001` | 后端地址 |
 | `OPENCODE_DISABLE_TOOLS` | `true` | 禁用 OpenCode 内置工具 |
 | `OPENCODE_INTERNAL_ALLOWED_TOOLS` | (空) | 请求未带 `tools` 时放行的内置工具，逗号分隔 |
-| `OPENCODE_PROXY_PROMPT_MODE` | `standard` | `standard` 或 `plugin-inject` |
 | `OPENCODE_PROXY_OMIT_SYSTEM_PROMPT` | `false` | 忽略传入的 system prompt |
 | `OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS` | `false` | 自动清理会话存储 |
 | `OPENCODE_USE_ISOLATED_HOME` | `false` | 使用隔离的 OpenCode 配置目录 |
@@ -129,7 +128,6 @@ API_KEY=your-secret-key
 OPENCODE_SERVER_PASSWORD=your-password
 OPENCODE_DISABLE_TOOLS=true
 OPENCODE_INTERNAL_ALLOWED_TOOLS=web_fetch
-OPENCODE_PROXY_PROMPT_MODE=plugin-inject
 OPENCODE_PROXY_OMIT_SYSTEM_PROMPT=true
 OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS=true
 ```

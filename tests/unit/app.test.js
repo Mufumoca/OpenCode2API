@@ -2,7 +2,6 @@ import request from 'supertest';
 import { jest } from '@jest/globals';
 import { buildExternalToolRegistry } from '../../src/tool-runtime/registry.js';
 import { normalizeExternalToolChoice, buildToolExposure } from '../../src/tool-runtime/router.js';
-import { evaluateToolPolicy } from '../../src/tool-runtime/policy.js';
 import { validateToolCall, validateToolCalls } from '../../src/tool-runtime/validator.js';
 
 const sdkMocks = {
@@ -415,7 +414,7 @@ describe('Proxy OpenAI API', () => {
         expect(sdkMocks.toolIds).toHaveBeenCalledTimes(1);
     });
 
-    test('POST /v1/chat/completions preserves backward compatibility for INTERNAL_WEB_FETCH_ENABLED', async () => {
+    test('POST /v1/chat/completions exposes web_fetch via INTERNAL_ALLOWED_TOOLS', async () => {
         const internalApp = createApp({
             PORT: 10000,
             API_KEY: 'test-key',
@@ -423,7 +422,7 @@ describe('Proxy OpenAI API', () => {
             REQUEST_TIMEOUT_MS: 5000,
             DISABLE_TOOLS: true,
             DEBUG: false,
-            INTERNAL_WEB_FETCH_ENABLED: true
+            INTERNAL_ALLOWED_TOOLS: ['web_fetch']
         }).app;
 
         sdkMocks.sessionMessages.mockResolvedValueOnce([
@@ -573,8 +572,7 @@ describe('Proxy OpenAI API', () => {
             DISABLE_TOOLS: true,
             DEBUG: false,
             INTERNAL_ALLOWED_TOOLS: ['web_fetch', 'filesystem'],
-            HEALTH_DETAILS_ENABLED: true,
-            HEALTH_DETAILS_REQUIRE_AUTH: true
+            HEALTH_DETAILS_ENABLED: true
         }).app;
 
         const res = await request(diagnosticsApp)
@@ -600,8 +598,7 @@ describe('Proxy OpenAI API', () => {
             REQUEST_TIMEOUT_MS: 5000,
             DISABLE_TOOLS: true,
             DEBUG: false,
-            HEALTH_DETAILS_ENABLED: true,
-            HEALTH_DETAILS_REQUIRE_AUTH: true
+            HEALTH_DETAILS_ENABLED: true
         }).app;
 
         const res = await request(diagnosticsApp).get('/health/details');
@@ -631,8 +628,7 @@ describe('Proxy OpenAI API', () => {
             REQUEST_TIMEOUT_MS: 5000,
             DISABLE_TOOLS: true,
             DEBUG: false,
-            METRICS_ENABLED: true,
-            METRICS_REQUIRE_AUTH: true
+            METRICS_ENABLED: true
         }).app;
 
         const res = await request(metricsApp)
@@ -653,8 +649,7 @@ describe('Proxy OpenAI API', () => {
             REQUEST_TIMEOUT_MS: 5000,
             DISABLE_TOOLS: true,
             DEBUG: false,
-            METRICS_ENABLED: true,
-            METRICS_REQUIRE_AUTH: true
+            METRICS_ENABLED: true
         }).app;
 
         const res = await request(metricsApp).get('/metrics');
@@ -1333,15 +1328,14 @@ describe('Proxy OpenAI API', () => {
         expect(res.text).toContain('"name":"weather_lookup"');
     });
 
-    test('POST /v1/chat/completions strips denied external tool calls from non-stream output', async () => {
+    test('POST /v1/chat/completions returns write-shaped external tool calls to the client', async () => {
         const restrictedApp = createApp({
             PORT: 10000,
             API_KEY: 'test-key',
             OPENCODE_SERVER_URL: 'http://127.0.0.1:10001',
             REQUEST_TIMEOUT_MS: 5000,
             DISABLE_TOOLS: false,
-            DEBUG: false,
-            EXTERNAL_TOOL_DENYLIST: ['delete_ticket']
+            DEBUG: false
         }).app;
 
         sdkMocks.sessionMessages.mockResolvedValueOnce([
@@ -1379,9 +1373,9 @@ describe('Proxy OpenAI API', () => {
             });
 
         expect(res.statusCode).toEqual(200);
-        expect(res.body.choices[0].finish_reason).toEqual('stop');
-        expect(res.body.choices[0].message.tool_calls).toBeUndefined();
-        expect(res.body.choices[0].message.content).toEqual('');
+        expect(res.body.choices[0].finish_reason).toEqual('tool_calls');
+        expect(res.body.choices[0].message.tool_calls).toHaveLength(1);
+        expect(res.body.choices[0].message.tool_calls[0].function.name).toEqual('delete_ticket');
     });
 
     test('POST /v1/responses returns assistant response', async () => {
@@ -1618,7 +1612,7 @@ describe('Proxy OpenAI API', () => {
         expect(sdkMocks.toolIds).toHaveBeenCalledTimes(1);
     });
 
-    test('POST /v1/responses preserves backward compatibility for INTERNAL_WEB_FETCH_ENABLED', async () => {
+    test('POST /v1/responses exposes web_fetch via INTERNAL_ALLOWED_TOOLS', async () => {
         const internalApp = createApp({
             PORT: 10000,
             API_KEY: 'test-key',
@@ -1626,7 +1620,7 @@ describe('Proxy OpenAI API', () => {
             REQUEST_TIMEOUT_MS: 5000,
             DISABLE_TOOLS: true,
             DEBUG: false,
-            INTERNAL_WEB_FETCH_ENABLED: true
+            INTERNAL_ALLOWED_TOOLS: ['web_fetch']
         }).app;
 
         sdkMocks.sessionPrompt.mockResolvedValueOnce({
@@ -1942,15 +1936,14 @@ describe('Proxy OpenAI API', () => {
         expect(res.text).toContain('data: [DONE]');
     });
 
-    test('POST /v1/responses strips denied external function calls from streaming output', async () => {
+    test('POST /v1/responses returns write-shaped external function calls from streaming output', async () => {
         const restrictedApp = createApp({
             PORT: 10000,
             API_KEY: 'test-key',
             OPENCODE_SERVER_URL: 'http://127.0.0.1:10001',
             REQUEST_TIMEOUT_MS: 5000,
             DISABLE_TOOLS: false,
-            DEBUG: false,
-            EXTERNAL_TOOL_DENYLIST: ['delete_ticket']
+            DEBUG: false
         }).app;
 
         sdkMocks.eventSubscribe.mockResolvedValueOnce({
@@ -1994,19 +1987,18 @@ describe('Proxy OpenAI API', () => {
             });
 
         expect(res.statusCode).toEqual(200);
-        expect(res.text).not.toContain('"name":"delete_ticket"');
+        expect(res.text).toContain('"name":"delete_ticket"');
         expect(res.text).toContain('response.completed');
     });
 
-    test('POST /v1/responses strips denied external function calls from non-stream output', async () => {
+    test('POST /v1/responses returns write-shaped external function calls from non-stream output', async () => {
         const restrictedApp = createApp({
             PORT: 10000,
             API_KEY: 'test-key',
             OPENCODE_SERVER_URL: 'http://127.0.0.1:10001',
             REQUEST_TIMEOUT_MS: 5000,
             DISABLE_TOOLS: false,
-            DEBUG: false,
-            EXTERNAL_TOOL_DENYLIST: ['delete_ticket']
+            DEBUG: false
         }).app;
 
         sdkMocks.sessionPrompt.mockResolvedValueOnce({
@@ -2043,7 +2035,9 @@ describe('Proxy OpenAI API', () => {
             });
 
         expect(res.statusCode).toEqual(200);
-        expect(res.body.output).toEqual([]);
+        expect(res.body.output).toHaveLength(1);
+        expect(res.body.output[0].type).toEqual('function_call');
+        expect(res.body.output[0].name).toEqual('delete_ticket');
     });
 
     /**
@@ -2065,8 +2059,6 @@ describe('Proxy OpenAI API', () => {
         expect(flat[0].namespacedName).toBe('external__read');
         expect(flat[0].description).toBe('Read a file');
         expect(flat[0].parameters.required).toEqual(['path']);
-        // Side-effect inference keyed off the name must still work on the flat shape.
-        expect(flat[0].sideEffect).toBe('read');
     });
 
     test('external tool registry keeps accepting nested Chat-Completions tool definitions', () => {

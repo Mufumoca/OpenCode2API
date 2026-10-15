@@ -27,18 +27,12 @@
 |:---------|:------------|:-------|:-----|
 | `OPENCODE_DISABLE_TOOLS` | `DISABLE_TOOLS` | `true` | 禁用 OpenCode 内置工具 |
 | `OPENCODE_CHAT_SESSION_AFFINITY` | `CHAT_SESSION_AFFINITY` | `false` | 多轮对话复用同一后端会话（只追加新回合，命中上游提示缓存） |
-| `OPENCODE_EXTERNAL_TOOLS_MODE` | `EXTERNAL_TOOLS_MODE` | `proxy-bridge` | 外部工具桥接模式，当前仅支持 `proxy-bridge` |
-| `OPENCODE_EXTERNAL_TOOLS_CONFLICT_POLICY` | `EXTERNAL_TOOLS_CONFLICT_POLICY` | `namespace` | 同名工具冲突隔离策略，当前仅支持 `namespace` |
-| `OPENCODE_INTERNAL_ALLOWED_TOOLS` | `INTERNAL_ALLOWED_TOOLS` | (空) | 请求未带 `tools` 时放行的内置工具，逗号分隔 |
-| `OPENCODE_INTERNAL_WEB_FETCH_ENABLED` | `INTERNAL_WEB_FETCH_ENABLED` | `false` | 旧开关：未显式配置 allowlist 时，启用后默认放行 `web_fetch` |
-| `OPENCODE_INTERNAL_TOOL_METRICS_ENABLED` | `INTERNAL_TOOL_METRICS_ENABLED` | `true` | 输出 allowlist 模式的调试/指标日志 |
-| `OPENCODE_TOOL_DISCOVERY_FIXTURE` | `INTERNAL_TOOL_DISCOVERY_FIXTURE` | (空) | 测试/调试用固定后端工具 ID 列表，逗号分隔 |
+| `OPENCODE_INTERNAL_ALLOWED_TOOLS` | `INTERNAL_ALLOWED_TOOLS` | (空) | 请求未带 `tools` 时放行的内置工具，逗号分隔（如 `web_fetch`） |
 
 ### 提示词与会话
 
 | 环境变量 | config.json | 默认值 | 说明 |
 |:---------|:------------|:-------|:-----|
-| `OPENCODE_PROXY_PROMPT_MODE` | `PROMPT_MODE` | `standard` | `standard` 或 `plugin-inject` |
 | `OPENCODE_PROXY_OMIT_SYSTEM_PROMPT` | `OMIT_SYSTEM_PROMPT` | `false` | 忽略传入的 system prompt |
 | `OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS` | `AUTO_CLEANUP_CONVERSATIONS` | `false` | 自动清理会话存储 |
 | `OPENCODE_PROXY_CLEANUP_INTERVAL_MS` | `CLEANUP_INTERVAL_MS` | `43200000` | 清理间隔（毫秒） |
@@ -50,9 +44,8 @@
 | 环境变量 | config.json | 默认值 | 说明 |
 |:---------|:------------|:-------|:-----|
 | `OPENCODE_HEALTH_DETAILS_ENABLED` | `HEALTH_DETAILS_ENABLED` | `true` | 是否暴露 `/health/details` |
-| `OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH` | `HEALTH_DETAILS_REQUIRE_AUTH` | `true` | `/health/details` 是否要求 Bearer 认证 |
 | `OPENCODE_METRICS_ENABLED` | `METRICS_ENABLED` | `false` | 是否暴露 `/metrics` |
-| `OPENCODE_METRICS_REQUIRE_AUTH` | `METRICS_REQUIRE_AUTH` | `true` | `/metrics` 是否要求 Bearer 认证 |
+| `OPENCODE_PUBLIC_DIAGNOSTICS` | `PUBLIC_DIAGNOSTICS` | `false` | `true` 时 `/health/details` 与 `/metrics` 免认证（默认要求 Bearer） |
 | `OPENCODE_PROXY_DEBUG` | `DEBUG` | `false` | 调试日志 |
 | `OPENCODE2API_EVENT_FIRST_DELTA_TIMEOUT_MS` | - | `30000` | 流式响应首个 delta 的超时 |
 | `OPENCODE2API_EVENT_IDLE_TIMEOUT_MS` | - | `8000` | 流式响应的空闲超时 |
@@ -65,12 +58,8 @@
     "API_KEY": "your-secret-api-key",
     "BIND_HOST": "0.0.0.0",
     "DISABLE_TOOLS": true,
-    "EXTERNAL_TOOLS_MODE": "proxy-bridge",
-    "EXTERNAL_TOOLS_CONFLICT_POLICY": "namespace",
     "INTERNAL_ALLOWED_TOOLS": ["web_fetch"],
-    "INTERNAL_TOOL_METRICS_ENABLED": true,
     "USE_ISOLATED_HOME": false,
-    "PROMPT_MODE": "standard",
     "OMIT_SYSTEM_PROMPT": false,
     "AUTO_CLEANUP_CONVERSATIONS": false,
     "CLEANUP_INTERVAL_MS": 43200000,
@@ -101,8 +90,7 @@ OpenCode Zen 免费模型只接受工具列表与官方客户端一致的请求�
 
 - 请求 **未传入** `tools` 时，代理进入 internal allowlist 模式，只允许 `OPENCODE_INTERNAL_ALLOWED_TOOLS` 声明的内置工具。
 - 工具名比较时忽略大小写和下划线，`web_fetch` 等同于 OpenCode 的 `webfetch`。
-- `OPENCODE_INTERNAL_WEB_FETCH_ENABLED=true` 是兼容旧配置的快捷方式：未显式配置 allowlist 时视为 `web_fetch`。
-- `OPENCODE_INTERNAL_TOOL_METRICS_ENABLED=true` 时输出模式选择、工具发现、命中结果和降级原因的日志，不记录工具返回内容。
+- 工具模式选择、工具发现和命中结果会输出到 DEBUG 日志（`OPENCODE_PROXY_DEBUG=true`），不记录工具返回内容。
 
 ### 请求级 allowlist 覆盖
 
@@ -121,7 +109,7 @@ OpenCode Zen 免费模型只接受工具列表与官方客户端一致的请求�
 ## 📊 健康诊断与指标
 
 - `/health` 始终是轻量健康检查。
-- `/health/details` 返回结构化诊断 JSON（`OPENCODE_HEALTH_DETAILS_ENABLED=false` 时返回 404，`OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH=true` 时要求认证）：
+- `/health/details` 返回结构化诊断 JSON（`OPENCODE_HEALTH_DETAILS_ENABLED=false` 时返回 404；默认要求 Bearer 认证，`OPENCODE_PUBLIC_DIAGNOSTICS=true` 时免认证）：
 
 ```json
 {
@@ -129,9 +117,7 @@ OpenCode Zen 免费模型只接受工具列表与官方客户端一致的请求�
   "proxy": true,
   "internal_tools": {
     "config": {
-      "allowed_tools": ["web_fetch"],
-      "metrics_enabled": true,
-      "discovery_fixture": []
+      "allowed_tools": ["web_fetch"]
     },
     "metrics": {
       "externalBridgeRequests": 12,
@@ -160,13 +146,6 @@ opencode_internal_tool_fallback_disabled_total
 opencode_internal_tool_cache_ids
 ```
 
-## 🎯 Prompt Mode
-
-| 模式 | 说明 |
-|:-----|:-----|
-| `standard`（默认） | 标准模式，完整处理提示词 |
-| `plugin-inject` | 插件注入模式，减小模型侧提示词大小，通常与 `OMIT_SYSTEM_PROMPT=true` 配合使用 |
-
 ## ⭐ 推荐配置
 
 ### Docker 生产环境
@@ -176,7 +155,6 @@ API_KEY=your-secret-key
 OPENCODE_SERVER_PASSWORD=your-password
 OPENCODE_DISABLE_TOOLS=true
 OPENCODE_INTERNAL_ALLOWED_TOOLS=web_fetch
-OPENCODE_PROXY_PROMPT_MODE=plugin-inject
 OPENCODE_PROXY_OMIT_SYSTEM_PROMPT=true
 OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS=true
 ```

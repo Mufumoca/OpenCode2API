@@ -114,7 +114,6 @@ When the model calls tools, non-streaming responses return `message.tool_calls` 
 | `OPENCODE_SERVER_URL` | `http://127.0.0.1:10001` | Backend URL |
 | `OPENCODE_DISABLE_TOOLS` | `true` | Disable OpenCode built-in tools |
 | `OPENCODE_INTERNAL_ALLOWED_TOOLS` | (empty) | Built-ins allowed when a request has no `tools`, comma-separated |
-| `OPENCODE_PROXY_PROMPT_MODE` | `standard` | `standard` or `plugin-inject` |
 | `OPENCODE_PROXY_OMIT_SYSTEM_PROMPT` | `false` | Ignore the incoming system prompt |
 | `OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS` | `false` | Auto-clean session storage |
 | `OPENCODE_USE_ISOLATED_HOME` | `false` | Use an isolated OpenCode config directory |
@@ -129,7 +128,6 @@ API_KEY=your-secret-key
 OPENCODE_SERVER_PASSWORD=your-password
 OPENCODE_DISABLE_TOOLS=true
 OPENCODE_INTERNAL_ALLOWED_TOOLS=web_fetch
-OPENCODE_PROXY_PROMPT_MODE=plugin-inject
 OPENCODE_PROXY_OMIT_SYSTEM_PROMPT=true
 OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS=true
 ```

@@ -1,10 +1,4 @@
-import {
-  EXTERNAL_TOOL_PREFIX,
-  TOOL_RISK_LEVELS,
-  TOOL_SIDE_EFFECTS,
-  normalizeRiskLevel,
-  normalizeSideEffect
-} from './contracts.js';
+import { EXTERNAL_TOOL_PREFIX } from './contracts.js';
 
 function normalizeDescription(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -36,43 +30,8 @@ export function normalizeToolDefinition(tool) {
   return {
     name,
     description: definition.description,
-    parameters: definition.parameters,
-    enabled: definition.enabled,
-    x_proxy_side_effect: definition.x_proxy_side_effect ?? tool.x_proxy_side_effect,
-    x_proxy_risk_level: definition.x_proxy_risk_level ?? tool.x_proxy_risk_level,
-    x_proxy_requires_confirmation:
-      definition.x_proxy_requires_confirmation ?? tool.x_proxy_requires_confirmation
+    parameters: definition.parameters
   };
-}
-
-function inferSideEffect(definition = {}) {
-  const declared = definition.x_proxy_side_effect;
-  if (declared) return normalizeSideEffect(declared, TOOL_SIDE_EFFECTS.NONE);
-
-  const name = String(definition.name || '').toLowerCase();
-  if (/^(get|list|search|find|read|fetch|lookup)/.test(name)) return TOOL_SIDE_EFFECTS.READ;
-  if (/^(create|update|set|post|write|send)/.test(name)) return TOOL_SIDE_EFFECTS.WRITE;
-  if (/^(delete|remove|destroy)/.test(name)) return TOOL_SIDE_EFFECTS.DELETE;
-  return TOOL_SIDE_EFFECTS.NONE;
-}
-
-function inferRiskLevel(definition = {}, sideEffect = TOOL_SIDE_EFFECTS.NONE) {
-  const declared = definition.x_proxy_risk_level;
-  if (declared) return normalizeRiskLevel(declared, TOOL_RISK_LEVELS.LOW);
-  if (sideEffect === TOOL_SIDE_EFFECTS.DELETE || sideEffect === TOOL_SIDE_EFFECTS.PAYMENT) {
-    return TOOL_RISK_LEVELS.CRITICAL;
-  }
-  if (sideEffect === TOOL_SIDE_EFFECTS.WRITE || sideEffect === TOOL_SIDE_EFFECTS.EXTERNAL_NOTIFICATION) {
-    return TOOL_RISK_LEVELS.MEDIUM;
-  }
-  return TOOL_RISK_LEVELS.LOW;
-}
-
-function inferRequiresConfirmation(definition = {}, sideEffect = TOOL_SIDE_EFFECTS.NONE, riskLevel = TOOL_RISK_LEVELS.LOW) {
-  if (typeof definition.x_proxy_requires_confirmation === 'boolean') {
-    return definition.x_proxy_requires_confirmation;
-  }
-  return sideEffect === TOOL_SIDE_EFFECTS.WRITE || riskLevel === TOOL_RISK_LEVELS.HIGH || riskLevel === TOOL_RISK_LEVELS.CRITICAL;
 }
 
 export function buildExternalToolRegistry(tools, options = {}) {
@@ -81,7 +40,7 @@ export function buildExternalToolRegistry(tools, options = {}) {
   const registry = [];
   const seenNamespaced = new Set();
 
-  tools.forEach((tool, index) => {
+  tools.forEach((tool) => {
     const definition = normalizeToolDefinition(tool);
     if (!definition) return;
     const originalName = definition.name;
@@ -94,19 +53,11 @@ export function buildExternalToolRegistry(tools, options = {}) {
     }
     seenNamespaced.add(namespacedName);
 
-    const sideEffect = inferSideEffect(definition);
-    const riskLevel = inferRiskLevel(definition, sideEffect);
     registry.push({
-      id: `external_tool_${index + 1}`,
       originalName,
       namespacedName,
       description: normalizeDescription(definition.description),
-      parameters: normalizeParameters(definition.parameters),
-      sideEffect,
-      riskLevel,
-      requiresConfirmation: inferRequiresConfirmation(definition, sideEffect, riskLevel),
-      enabled: definition.enabled !== false,
-      sourceTool: tool
+      parameters: normalizeParameters(definition.parameters)
     });
   });
 
@@ -133,14 +84,4 @@ export function findExternalToolByName(registry, name) {
 
 function normalizeToolNameForMatch(name) {
     return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-export function createRegistryIndex(registry) {
-  const byOriginalName = new Map();
-  const byNamespacedName = new Map();
-  (registry || []).forEach((tool) => {
-    byOriginalName.set(tool.originalName, tool);
-    byNamespacedName.set(tool.namespacedName, tool);
-  });
-  return { byOriginalName, byNamespacedName };
 }

@@ -38,17 +38,10 @@ const defaultConfig = {
     OPENCODE_PATH: 'opencode',
     BIND_HOST: '0.0.0.0',
     DISABLE_TOOLS: true,
-    EXTERNAL_TOOLS_MODE: 'proxy-bridge',
-    EXTERNAL_TOOLS_CONFLICT_POLICY: 'namespace',
-    INTERNAL_WEB_FETCH_ENABLED: parseBool(process.env.OPENCODE_INTERNAL_WEB_FETCH_ENABLED, false),
     INTERNAL_ALLOWED_TOOLS: parseToolAllowlist(process.env.OPENCODE_INTERNAL_ALLOWED_TOOLS, []),
-    INTERNAL_TOOL_METRICS_ENABLED: parseBool(process.env.OPENCODE_INTERNAL_TOOL_METRICS_ENABLED, true),
-    INTERNAL_TOOL_DISCOVERY_FIXTURE: parseToolAllowlist(process.env.OPENCODE_TOOL_DISCOVERY_FIXTURE, []),
     HEALTH_DETAILS_ENABLED: parseBool(process.env.OPENCODE_HEALTH_DETAILS_ENABLED, true),
-    HEALTH_DETAILS_REQUIRE_AUTH: parseBool(process.env.OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH, true),
     METRICS_ENABLED: parseBool(process.env.OPENCODE_METRICS_ENABLED, false),
-    METRICS_REQUIRE_AUTH: parseBool(process.env.OPENCODE_METRICS_REQUIRE_AUTH, true),
-    PROMPT_MODE: process.env.OPENCODE_PROXY_PROMPT_MODE || 'standard',
+    PUBLIC_DIAGNOSTICS: parseBool(process.env.OPENCODE_PUBLIC_DIAGNOSTICS, false),
     OMIT_SYSTEM_PROMPT: parseBool(process.env.OPENCODE_PROXY_OMIT_SYSTEM_PROMPT, false),
     AUTO_CLEANUP_CONVERSATIONS: parseBool(process.env.OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS, false),
     CLEANUP_INTERVAL_MS: parseInt(process.env.OPENCODE_PROXY_CLEANUP_INTERVAL_MS) || 43200000,
@@ -84,21 +77,14 @@ const finalConfig = {
     OPENCODE_PATH: process.env.OPENCODE_PATH || fileConfig.OPENCODE_PATH || defaultConfig.OPENCODE_PATH,
     BIND_HOST: process.env.BIND_HOST || fileConfig.BIND_HOST || defaultConfig.BIND_HOST,
     DISABLE_TOOLS: parseBool(process.env.OPENCODE_DISABLE_TOOLS, parseBool(fileConfig.DISABLE_TOOLS, defaultConfig.DISABLE_TOOLS)),
-    EXTERNAL_TOOLS_MODE: process.env.OPENCODE_EXTERNAL_TOOLS_MODE || fileConfig.EXTERNAL_TOOLS_MODE || defaultConfig.EXTERNAL_TOOLS_MODE,
-    EXTERNAL_TOOLS_CONFLICT_POLICY: process.env.OPENCODE_EXTERNAL_TOOLS_CONFLICT_POLICY || fileConfig.EXTERNAL_TOOLS_CONFLICT_POLICY || defaultConfig.EXTERNAL_TOOLS_CONFLICT_POLICY,
-    INTERNAL_WEB_FETCH_ENABLED: parseBool(process.env.OPENCODE_INTERNAL_WEB_FETCH_ENABLED, parseBool(fileConfig.INTERNAL_WEB_FETCH_ENABLED, defaultConfig.INTERNAL_WEB_FETCH_ENABLED)),
     INTERNAL_ALLOWED_TOOLS: parseToolAllowlist(process.env.OPENCODE_INTERNAL_ALLOWED_TOOLS, parseToolAllowlist(fileConfig.INTERNAL_ALLOWED_TOOLS, defaultConfig.INTERNAL_ALLOWED_TOOLS)),
-    INTERNAL_TOOL_METRICS_ENABLED: parseBool(process.env.OPENCODE_INTERNAL_TOOL_METRICS_ENABLED, parseBool(fileConfig.INTERNAL_TOOL_METRICS_ENABLED, defaultConfig.INTERNAL_TOOL_METRICS_ENABLED)),
-    INTERNAL_TOOL_DISCOVERY_FIXTURE: parseToolAllowlist(process.env.OPENCODE_TOOL_DISCOVERY_FIXTURE, parseToolAllowlist(fileConfig.INTERNAL_TOOL_DISCOVERY_FIXTURE, defaultConfig.INTERNAL_TOOL_DISCOVERY_FIXTURE)),
     HEALTH_DETAILS_ENABLED: parseBool(process.env.OPENCODE_HEALTH_DETAILS_ENABLED, parseBool(fileConfig.HEALTH_DETAILS_ENABLED, defaultConfig.HEALTH_DETAILS_ENABLED)),
-    HEALTH_DETAILS_REQUIRE_AUTH: parseBool(process.env.OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH, parseBool(fileConfig.HEALTH_DETAILS_REQUIRE_AUTH, defaultConfig.HEALTH_DETAILS_REQUIRE_AUTH)),
     METRICS_ENABLED: parseBool(process.env.OPENCODE_METRICS_ENABLED, parseBool(fileConfig.METRICS_ENABLED, defaultConfig.METRICS_ENABLED)),
-    METRICS_REQUIRE_AUTH: parseBool(process.env.OPENCODE_METRICS_REQUIRE_AUTH, parseBool(fileConfig.METRICS_REQUIRE_AUTH, defaultConfig.METRICS_REQUIRE_AUTH)),
+    PUBLIC_DIAGNOSTICS: parseBool(process.env.OPENCODE_PUBLIC_DIAGNOSTICS, parseBool(fileConfig.PUBLIC_DIAGNOSTICS, defaultConfig.PUBLIC_DIAGNOSTICS)),
     USE_ISOLATED_HOME: parseBool(process.env.OPENCODE_USE_ISOLATED_HOME, parseBool(fileConfig.USE_ISOLATED_HOME, false)),
     REQUEST_TIMEOUT_MS: parseInt(process.env.OPENCODE_PROXY_REQUEST_TIMEOUT_MS) || fileConfig.REQUEST_TIMEOUT_MS || 180000,
     DEBUG: parseBool(process.env.OPENCODE_PROXY_DEBUG, parseBool(fileConfig.DEBUG, false)),
     ZEN_API_KEY: process.env.OPENCODE_ZEN_API_KEY || fileConfig.ZEN_API_KEY || '',
-    PROMPT_MODE: process.env.OPENCODE_PROXY_PROMPT_MODE || fileConfig.PROMPT_MODE || defaultConfig.PROMPT_MODE,
     OMIT_SYSTEM_PROMPT: parseBool(process.env.OPENCODE_PROXY_OMIT_SYSTEM_PROMPT, parseBool(fileConfig.OMIT_SYSTEM_PROMPT, defaultConfig.OMIT_SYSTEM_PROMPT)),
     AUTO_CLEANUP_CONVERSATIONS: parseBool(process.env.OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS, parseBool(fileConfig.AUTO_CLEANUP_CONVERSATIONS, defaultConfig.AUTO_CLEANUP_CONVERSATIONS)),
     CLEANUP_INTERVAL_MS: parseInt(process.env.OPENCODE_PROXY_CLEANUP_INTERVAL_MS) || fileConfig.CLEANUP_INTERVAL_MS || defaultConfig.CLEANUP_INTERVAL_MS,
@@ -121,7 +107,7 @@ try {
 } catch (e) {
     console.warn(`[Warning] Cannot verify OpenCode installation: ${finalConfig.OPENCODE_PATH}`);
     console.warn('[Warning] Please ensure OpenCode is installed:');
-    console.warn('  Windows: npm install -g opencode-ai');
+    console.warn('  Windows: npm install -g opencode-ai@1.19.0');
     console.warn('  Linux/macOS: curl -fsSL https://opencode.ai/install | bash');
     console.warn('[Warning] Or specify the full path in config.json:');
     console.warn('  { "OPENCODE_PATH": "C:\\\\Users\\\\YourName\\\\AppData\\\\Roaming\\\\npm\\\\opencode.cmd" }');
@@ -138,19 +124,12 @@ console.log(`  - Zen API Key: ${finalConfig.ZEN_API_KEY ? 'Configured' : 'Not co
 console.log(`  - Disable Tools: ${finalConfig.DISABLE_TOOLS ? 'Yes' : 'No'}`);
 console.log(`  - Chat Session Affinity: ${finalConfig.CHAT_SESSION_AFFINITY ? 'Yes' : 'No (new session per request)'}`);
 console.log(`  - Manage Backend: ${finalConfig.MANAGE_BACKEND ? 'Yes' : 'No'}`);
-console.log(`  - External Tools Mode: ${finalConfig.EXTERNAL_TOOLS_MODE}`);
-console.log(`  - External Tools Conflict Policy: ${finalConfig.EXTERNAL_TOOLS_CONFLICT_POLICY}`);
-console.log(`  - Internal web_fetch Enabled: ${finalConfig.INTERNAL_WEB_FETCH_ENABLED ? 'Yes' : 'No'}`);
 console.log(`  - Internal Allowed Tools: ${finalConfig.INTERNAL_ALLOWED_TOOLS.length ? finalConfig.INTERNAL_ALLOWED_TOOLS.join(', ') : '(none)'}`);
-console.log(`  - Internal Tool Metrics Enabled: ${finalConfig.INTERNAL_TOOL_METRICS_ENABLED ? 'Yes' : 'No'}`);
-console.log(`  - Internal Tool Discovery Fixture: ${finalConfig.INTERNAL_TOOL_DISCOVERY_FIXTURE.length ? finalConfig.INTERNAL_TOOL_DISCOVERY_FIXTURE.join(', ') : '(none)'}`);
 console.log(`  - Health Details Enabled: ${finalConfig.HEALTH_DETAILS_ENABLED ? 'Yes' : 'No'}`);
-console.log(`  - Health Details Require Auth: ${finalConfig.HEALTH_DETAILS_REQUIRE_AUTH ? 'Yes' : 'No'}`);
 console.log(`  - Metrics Enabled: ${finalConfig.METRICS_ENABLED ? 'Yes' : 'No'}`);
-console.log(`  - Metrics Require Auth: ${finalConfig.METRICS_REQUIRE_AUTH ? 'Yes' : 'No'}`);
+console.log(`  - Public Diagnostics: ${finalConfig.PUBLIC_DIAGNOSTICS ? 'Yes (no auth on /health/details & /metrics)' : 'No'}`);
 console.log(`  - Use Isolated Home: ${finalConfig.USE_ISOLATED_HOME ? 'Yes' : 'No'}`);
 console.log(`  - Request Timeout: ${finalConfig.REQUEST_TIMEOUT_MS}ms`);
-console.log(`  - Prompt Mode: ${finalConfig.PROMPT_MODE}`);
 console.log(`  - Omit System Prompt: ${finalConfig.OMIT_SYSTEM_PROMPT ? 'Yes' : 'No'}`);
 console.log(`  - Auto Cleanup Conversations: ${finalConfig.AUTO_CLEANUP_CONVERSATIONS ? 'Yes' : 'No'}`);
 console.log(`  - Cleanup Interval: ${finalConfig.CLEANUP_INTERVAL_MS}ms`);
