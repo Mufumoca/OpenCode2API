@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Test Scripts**: `tests/integration/test-integration.sh` passed `OPENCODE_HEALTH_DETAILS_REQUIRE_AUTH` / `OPENCODE_METRICS_REQUIRE_AUTH` / `OPENCODE_TOOL_DISCOVERY_FIXTURE`, which the proxy no longer reads (auth now via `OPENCODE_PUBLIC_DIAGNOSTICS`, fixture removed); it also hardcoded the docs placeholder `Authorization: Bearer ***` everywhere instead of `TEST_API_KEY`. `tests/manual/test-streaming-real.sh` had the same placeholder bug and defaulted to `opencode/kimi-k2.5`, which is no longer in the catalog (default now `opencode/cat-jam-free`, overridable via `TEST_MODEL`); its `-d '…'` payload also blocked shell expansion. Both scripts verified against a live proxy.
+- **Docs Precision (tool-lock)**: the Zen gate is a tool-list *shape* check against the official client (verbatim match), not a minimum tool count — documented with the 2026-10-15 probe result (stripped `tools:{id:false}` requests 403, bare requests without `tools` pass).
+
 ### Removed
 
 - **Dead External-Tool Policy Layer**: The risk-level / side-effect / confirmation machinery in `tool-runtime/policy.js` had no configuration entry point (`EXTERNAL_TOOL_POLICY_MODE`, `EXTERNAL_TOOL_DENYLIST`, `x_proxy_*` metadata were never read from env, config.json, or docs), and because "write"-shaped tool names (`create_*`, `send_*`, `delete_*` …) were inferred as high-risk, those client tool calls were silently swallowed in production — the client declared a tool and never received `tool_calls`. Deleted the layer, `plugin/tool-lock.js` (9-line stub superseded by `plugin/opencode2api-tool-lock.js`), and the unused `buildExternalToolsReminder` / `createRegistryIndex` helpers. Tool calls now flow straight from validation back to the client.

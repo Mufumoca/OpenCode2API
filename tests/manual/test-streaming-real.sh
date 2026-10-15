@@ -19,12 +19,12 @@ echo "Test 1: Streaming without Reasoning"
 echo "-----------------------------------"
 RESPONSE=$(curl -s -N -X POST "$BASE_URL/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{
-    "model": "opencode/kimi-k2.5",
-    "messages": [{"role": "user", "content": "Reply with 3 words"}],
-    "stream": true
-  }')
+  -H "Authorization: Bearer ${API_KEY}" \
+  -d "{
+    \"model\": \"${TEST_MODEL:-opencode/cat-jam-free}\",
+    \"messages\": [{\"role\": \"user\", \"content\": \"Reply with 3 words\"}],
+    \"stream\": true
+  }")
 
 if echo "$RESPONSE" | grep -q "data: {"; then
     echo "✓ SSE chunks found"
@@ -45,12 +45,12 @@ echo "Test 2: Non-Streaming"
 echo "-----------------------------------"
 RESPONSE=$(curl -s -X POST "$BASE_URL/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{
-    "model": "opencode/kimi-k2.5",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "stream": false
-  }')
+  -H "Authorization: Bearer ${API_KEY}" \
+  -d "{
+    \"model\": \"${TEST_MODEL:-opencode/cat-jam-free}\",
+    \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}],
+    \"stream\": false
+  }")
 
 if echo "$RESPONSE" | grep -q '"choices"'; then
     echo "✓ Valid JSON response"

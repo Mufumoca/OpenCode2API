@@ -82,7 +82,7 @@
 
 ### 工具锁插件
 
-OpenCode Zen 免费模型只接受工具列表与官方客户端一致的请求，按请求关闭工具会被拒绝（`free tier can only be used from within OpenCode`）。因此代理拉起后端时会加载 `plugin/opencode2api-tool-lock.js`：工具列表保持原样，工具策略写在会话标题里，由插件在执行时拦截。
+OpenCode Zen 免费模型对请求做客户端指纹校验：工具列表必须与官方客户端**逐字一致**（是列表形状校验，不是工具数量下限）。实测（2026-10-15，后端 1.19.0）：带 `tools:{id:false}` 剥离的请求会被拒绝（`free tier can only be used from within OpenCode`），完全不带 `tools` 字段的裸请求反而能通过。因此代理拉起后端时会加载 `plugin/opencode2api-tool-lock.js`：工具列表保持原样，工具策略写在会话标题里，由插件在执行时拦截。
 
 - 使用自行启动的后端（`MANAGE_BACKEND=false`）时，需要把该文件的绝对路径加入后端配置的 `plugin` 列表，否则代理退回按请求关闭工具，免费模型会被拒绝。
 
