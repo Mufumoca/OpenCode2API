@@ -173,5 +173,5 @@ MIT · see [LICENSE](./LICENSE.md)
 ## 🙏 Acknowledgements
 
 - [dxxzst/opencode-to-openai](https://github.com/dxxzst/opencode-to-openai)
-- [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api) — the same-named Go gateway
+- [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api)
 - [lucasliet/opencode-openai-proxy](https://github.com/lucasliet/opencode-openai-proxy)
