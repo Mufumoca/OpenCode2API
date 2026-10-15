@@ -173,5 +173,5 @@ MIT · 详见 [LICENSE](./LICENSE.md)
 ## 🙏 致谢
 
 - [dxxzst/opencode-to-openai](https://github.com/dxxzst/opencode-to-openai)
-- [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api) — 同名 Go 网关
+- [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api)
 - [lucasliet/opencode-openai-proxy](https://github.com/lucasliet/opencode-openai-proxy)
