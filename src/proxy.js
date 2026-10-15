@@ -477,8 +477,26 @@ export function checkHealth(serverUrl, password = '') {
             res.on('data', (chunk) => { body += chunk; });
             res.on('end', () => {
                 try {
-                    if (JSON.parse(body)?.healthy === true) resolve(true);
-                    else reject(new Error('Backend reported unhealthy'));
+                    const payload = JSON.parse(body);
+                    if (payload?.healthy !== true) {
+                        reject(new Error('Backend reported unhealthy'));
+                        return;
+                    }
+                    // OpenCode 2.x moved the server API under /api/* and dropped
+                    // the 1.x routes (@opencode-ai/sdk 1.x calls /config/providers,
+                    // /session, ...). A 2.x backend boots fine, so every proxy
+                    // request would instead fail with empty model lists and 404s.
+                    // Refuse it up front with an actionable message.
+                    const major = Number(String(payload?.version || '').split('.')[0]);
+                    if (major >= 2) {
+                        reject(new Error(
+                            `OpenCode backend ${payload.version} is not compatible: opencode2api uses the 1.x server API. ` +
+                            'Install a 1.x backend, e.g. `npm install -g opencode-ai@1.19.0` (newest compatible), ' +
+                            'or point OPENCODE_PATH at a 1.x binary.'
+                        ));
+                        return;
+                    }
+                    resolve(true);
                 } catch (e) {
                     reject(new Error('Unexpected health response'));
                 }

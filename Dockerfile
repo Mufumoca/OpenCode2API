@@ -10,7 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && gosu --version \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g opencode-ai
+# opencode-ai 2.x moved the server API under /api/* and is incompatible with
+# @opencode-ai/sdk 1.x used by this proxy. Pin the newest 1.x release (1.19.0,
+# verified against the OpenCode Zen free tier 2026-10-15).
+RUN npm install -g opencode-ai@1.19.0
 
 RUN mkdir -p /home/node/.local/share/opencode \
     && mkdir -p /home/node/.config/opencode \

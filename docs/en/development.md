@@ -7,7 +7,7 @@ node --version    # Requires 18+
 npm install
 
 # Install OpenCode CLI
-npm install -g opencode-ai
+npm install -g opencode-ai@1.19.0
 # Or curl -fsSL https://opencode.ai/install | bash
 ```
 

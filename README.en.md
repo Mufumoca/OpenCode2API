@@ -38,7 +38,7 @@ curl http://127.0.0.1:10000/health
 
 ```bash
 # Install the OpenCode CLI
-npm install -g opencode-ai
+npm install -g opencode-ai@1.19.0
 # or curl -fsSL https://opencode.ai/install | bash
 
 git clone https://github.com/TiaraBasori/opencode2api.git

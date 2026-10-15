@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Chat Session Affinity (`CHAT_SESSION_AFFINITY` / `OPENCODE_CHAT_SESSION_AFFINITY`, default off)**: `/v1/chat/completions` previously created a fresh OpenCode session for every request, so each turn of a multi-turn conversation paid for the full history again. When enabled, requests whose prompt is a pure sequence of user turns and that extend the conversation's recorded turn sequence resume the same backend session and append only the new turns, so upstream prompt caches hit (live probes: ~99% cached tokens on a second turn). Requests with assistant/tool parts, a changed system prompt, tool policy, or model, a concurrent second turn, or a failed turn fall back to a fresh session with the full history — same output semantics as before. Affinity sessions expire after 30 minutes of inactivity and are deleted.
 
+### Changed
+
+- **Backend Pin (opencode-ai 1.19.0)**: OpenCode 2.x moved the server API under `/api/*` and dropped the 1.x routes the bundled `@opencode-ai/sdk` calls, so an unpinned backend (`npm install -g opencode-ai`) silently broke `/v1/models` (empty list) and every completion. The Dockerfile now installs `opencode-ai@1.19.0` — the newest 1.x release, verified against the OpenCode Zen free tier on 2026-10-15 — and the proxy's `/global/health` check rejects a 2.x backend up front with the install command instead of failing per request. Docs and the quick-start now pin the version too.
+
 ### Fixed
 
 - **Free Models Rejected (#17, #18)**: OpenCode Zen free models (all but `space-bunny-free`) refuse requests whose tool list differs from the official client's. Tools are no longer disabled per request; the backend loads `plugin/opencode2api-tool-lock.js`, the tool policy rides in the session title, and the plugin blocks tools at execution time. Internal allowlists keep working, and native calls to bridged external tools are steered back to the text contract.
