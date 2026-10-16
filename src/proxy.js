@@ -195,6 +195,268 @@ function transformUpstreamError(error) {
     };
 }
 
+// --- Multi-user API keys -----------------------------------------------------
+//
+// API_KEYS is an optional, additional way to authenticate: every entry is a
+// named user key, while the legacy single API_KEY keeps working (it doubles as
+// the admin key for /admin/keys). A request matching any API_KEYS entry is
+// tagged with that key's name and metered per name; unlisted requests fall
+// back to the API_KEY path so existing single-key deployments are unchanged.
+
+// req.apiKeyName for requests authenticated with the legacy API_KEY (as opposed
+// to a named API_KEYS entry). Deliberately not a valid usage-entry name.
+const MASTER_KEY_NAME = '__api_key__';
+
+// Prefix for API_KEYS entries configured without an explicit name ("key-N",
+// where N is the entry's 1-based position in the list).
+const DEFAULT_KEY_NAME_PREFIX = 'key';
+
+/**
+ * Normalize a configured key name: trim and drop control characters. Returns
+ * the provided fallback when nothing usable remains.
+ * @param {*} name - Raw name value (usually string)
+ * @param {string} fallback - Default name (e.g. `key-2`)
+ * @returns {string}
+ */
+function normalizeApiKeyName(name, fallback) {
+    const cleaned = String(name ?? '')
+        .trim()
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\x00-\x1f\x7f]/g, '');
+    return cleaned || fallback;
+}
+
+// Names must survive the admin REST surface: DELETE /admin/keys/:name routes on
+// the raw name, so path separators can never be addressed, and `%` breaks
+// param decoding for clients that forget to encode. Length is capped to keep
+// admin tables and metrics sane; `__api_key__` is reserved for the legacy
+// master-key pseudo-entry. Throws with a clear message on violation.
+const API_KEY_NAME_MAX_LENGTH = 64;
+
+function validateApiKeyName(name) {
+    if (name === MASTER_KEY_NAME) {
+        throw new Error(`[Config] API_KEYS name "${MASTER_KEY_NAME}" is reserved`);
+    }
+    if (name.length > API_KEY_NAME_MAX_LENGTH) {
+        throw new Error(`[Config] API_KEYS name "${name.slice(0, 24)}…" exceeds ${API_KEY_NAME_MAX_LENGTH} characters`);
+    }
+    if (/[/%?#\\]/.test(name)) {
+        throw new Error(`[Config] API_KEYS name "${name}" must not contain "/", "\\", "%" or URL-significant characters`);
+    }
+}
+
+/**
+ * Parse the optional multi-user API_KEYS configuration.
+ *
+ * Accepted shapes:
+ *  - `[{ name: 'alice', key: 'sk-...' }, ...]` (config.json array; `name` optional)
+ *  - `['alice:sk-...', 'sk-bare', ...]`        (string array; `name:key` or bare key)
+ *  - `'alice:sk-...,bob:sk-...,sk-bare'`       (env-friendly comma-separated string,
+ *                                              used by `OPENCODE_API_KEYS`)
+ *
+ * `name:key` entries split on the FIRST `:` or `=`. Entries without a separator
+ * are bare keys and get the default name `key-N` (N = 1-based position in the
+ * final list). Throws on malformed entries, duplicate keys, and duplicate
+ * names, so a bad configuration fails at startup instead of per request.
+ *
+ * @param {Array|string|undefined|null} value - API_KEYS config value
+ * @returns {Array<{name: string, key: string}>} normalized entries in config order
+ */
+export function parseApiKeysConfig(value) {
+    if (value === undefined || value === null || value === '') return [];
+
+    let rawEntries;
+    if (Array.isArray(value)) {
+        rawEntries = value;
+    } else if (typeof value === 'string') {
+        rawEntries = value.split(',');
+    } else {
+        throw new Error('[Config] API_KEYS must be an array of {name, key} or a comma-separated "name:key" string');
+    }
+
+    const parsed = [];
+    const seenKeys = new Set();
+    const seenNames = new Set();
+    rawEntries.forEach((raw, index) => {
+        let name = '';
+        let key = '';
+        if (typeof raw === 'string') {
+            const trimmed = raw.trim();
+            if (!trimmed) return; // tolerate empty segments / trailing commas
+            const separator = trimmed.match(/^([^:=]+)([:=])(.*)$/);
+            if (separator) {
+                name = separator[1].trim();
+                key = separator[3].trim();
+                if (!key) {
+                    throw new Error(`[Config] API_KEYS entry #${index + 1} ("${trimmed}") has a name but no key after the separator`);
+                }
+            } else {
+                key = trimmed;
+            }
+        } else if (raw && typeof raw === 'object') {
+            name = typeof raw.name === 'string' ? raw.name.trim() : '';
+            key = typeof raw.key === 'string' ? raw.key.trim() : '';
+        } else {
+            throw new Error(`[Config] API_KEYS entry #${index + 1} is invalid: expected "name:key" or {name, key}`);
+        }
+        if (!key) {
+            throw new Error(`[Config] API_KEYS entry #${index + 1} is missing a key`);
+        }
+        name = normalizeApiKeyName(name, `${DEFAULT_KEY_NAME_PREFIX}-${index + 1}`);
+        validateApiKeyName(name);
+        if (seenKeys.has(key)) {
+            throw new Error(`[Config] API_KEYS contains a duplicate key for "${name}"; every key value must be unique`);
+        }
+        if (seenNames.has(name)) {
+            throw new Error(`[Config] API_KEYS contains a duplicate name "${name}"; every key name must be unique`);
+        }
+        seenKeys.add(key);
+        seenNames.add(name);
+        parsed.push({ name, key });
+    });
+    return parsed;
+}
+
+/**
+ * Constant-time string comparison so key checks do not leak timing detail.
+ * Lengths are compared via a hashed fallback to keep timing flat, then the
+ * mismatch fails the check.
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function safeTokenEquals(a, b) {
+    const bufA = Buffer.from(String(a));
+    const bufB = Buffer.from(String(b));
+    if (bufA.length !== bufB.length) {
+        const hashA = crypto.createHash('sha256').update(bufA).digest();
+        const hashB = crypto.createHash('sha256').update(bufB).digest();
+        crypto.timingSafeEqual(hashA, hashB);
+        return false;
+    }
+    return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Last-4 hint for admin listings. Keys of 4 characters or fewer (test stubs)
+ * are shown in full; real keys only ever reveal the suffix.
+ * @param {string} key
+ * @returns {string}
+ */
+export function keyHintFor(key) {
+    const value = String(key || '');
+    if (value.length <= 4) return value;
+    return `…${value.slice(-4)}`;
+}
+
+/**
+ * Escape a Prometheus label value (backslashes and double quotes).
+ * @param {*} value
+ * @returns {string}
+ */
+function escapePrometheusLabel(value) {
+    return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Create an in-memory per-key usage registry. Entries exist eagerly for
+ * configured keys (visible with zeroed counters before first use) and lazily
+ * for keys added at runtime. Data lives for the process lifetime only — there
+ * is intentionally no persistence.
+ *
+ * @param {Array<{name: string}>} [entries] - initially configured key names
+ * @returns {object} registry with trackRequest/trackUsage/entry/snapshot/...
+ */
+export function createKeyUsageRegistry(entries = []) {
+    const zeroUsage = (createdAt) => ({
+        requests: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        lastUsedAt: null,
+        createdAt
+    });
+    const map = new Map();
+    const ensureEntry = (name) => {
+        let entry = map.get(name);
+        if (!entry) {
+            entry = zeroUsage(Date.now());
+            map.set(name, entry);
+        }
+        return entry;
+    };
+    (Array.isArray(entries) ? entries : []).forEach(({ name }) => ensureEntry(name));
+
+    const copyEntry = (entry) => ({
+        requests: entry.requests,
+        promptTokens: entry.promptTokens,
+        completionTokens: entry.completionTokens,
+        totalTokens: entry.totalTokens,
+        lastUsedAt: entry.lastUsedAt,
+        createdAt: entry.createdAt
+    });
+
+    return {
+        /** True when the name has a usage entry. */
+        has: (name) => map.has(name),
+        /** Ensure an entry exists (keys added at runtime via the admin API). */
+        register: (name) => { ensureEntry(name); },
+        /**
+         * Count one request against a key. Falsy/unknown names (no auth
+         * configured, legacy API_KEY, deleted key) are ignored.
+         * @param {string|undefined} name
+         */
+        trackRequest(name) {
+            if (!name) return;
+            if (!map.has(name)) ensureEntry(name);
+            const entry = map.get(name);
+            entry.requests += 1;
+            entry.lastUsedAt = Date.now();
+        },
+        /**
+         * Add token usage for one successful business request. The completion
+         * figure mirrors what the API response reports (reasoning included).
+         * @param {string|undefined} name
+         * @param {{promptTokens?: number, completionTokens?: number}} usage
+         */
+        trackUsage(name, { promptTokens = 0, completionTokens = 0 } = {}) {
+            if (!name) return;
+            if (!map.has(name)) ensureEntry(name);
+            const entry = map.get(name);
+            const prompt = Number(promptTokens) || 0;
+            const completion = Number(completionTokens) || 0;
+            entry.promptTokens += prompt;
+            entry.completionTokens += completion;
+            entry.totalTokens += prompt + completion;
+        },
+        /** Remove a key's accounting (admin delete). */
+        delete(name) { map.delete(name); },
+        /**
+         * Usage snapshot for one key; zeroed counters for unknown names.
+         * @param {string} name
+         */
+        entry(name) {
+            return copyEntry(map.get(name) || zeroUsage(0));
+        },
+        /**
+         * Aggregate snapshot: `{ byKey: { "<name>": {...} }, total: {...} }`.
+         * Keys appear in configuration/insertion order.
+         */
+        snapshot() {
+            const byKey = {};
+            const total = { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+            for (const [name, entry] of map) {
+                byKey[name] = copyEntry(entry);
+                total.requests += entry.requests;
+                total.promptTokens += entry.promptTokens;
+                total.completionTokens += entry.completionTokens;
+                total.totalTokens += entry.totalTokens;
+            }
+            return { byKey, total };
+        }
+    };
+}
+
 // --- Mutex Logic with Timeout ---
 async function getImageDataUri(url) {
     if (url.startsWith('data:')) {
@@ -553,6 +815,7 @@ if (process.platform !== 'win32') {
 export function createApp(config) {
     const {
         API_KEY,
+        API_KEYS,
         OPENCODE_SERVER_URL,
         OPENCODE_SERVER_PASSWORD,
         REQUEST_TIMEOUT_MS,
@@ -573,6 +836,34 @@ export function createApp(config) {
         WEB_PANEL_ENABLED = false
     } = config;
 
+    // Multi-user keys: parse once at app creation. Duplicate keys/names throw
+    // here so a bad config fails at startup instead of per request. The legacy
+    // single API_KEY keeps working for every path (it is also the admin key).
+    const apiKeyEntries = parseApiKeysConfig(API_KEYS);
+    const adminAuthEnabled = Boolean(API_KEY && API_KEY.trim() !== '');
+    if (adminAuthEnabled) {
+        const masterKey = API_KEY.trim();
+        for (const entry of apiKeyEntries) {
+            if (safeTokenEquals(entry.key, masterKey)) {
+                throw new Error(`[Config] API_KEYS entry "${entry.name}" must not use the same key value as API_KEY (the admin key)`);
+            }
+        }
+    }
+    const apiKeyByName = new Map(apiKeyEntries.map((entry) => [entry.name, entry.key]));
+    const multiUserEnabled = apiKeyEntries.length > 0;
+    const keyUsage = createKeyUsageRegistry(apiKeyEntries);
+
+    const findMatchingUserKeyName = (token) => {
+        if (!token || !multiUserEnabled) return null;
+        let matchedName = null;
+        for (const entry of apiKeyEntries) {
+            if (safeTokenEquals(token, entry.key)) {
+                matchedName = entry.name;
+            }
+        }
+        return matchedName;
+    };
+
     const app = express();
     app.use(cors({
         origin: '*',
@@ -585,9 +876,17 @@ export function createApp(config) {
     const clientHeaders = buildBackendAuthHeaders(OPENCODE_SERVER_PASSWORD);
     const client = createOpencodeClient({ baseUrl: OPENCODE_SERVER_URL, headers: clientHeaders });
 
+    // Extract and validate the Bearer token from a request, if any.
+    const extractBearerToken = (req) => {
+        const authHeader = req.headers.authorization;
+        if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) return null;
+        return authHeader.slice('Bearer '.length).trim() || null;
+    };
+
     // Auth middleware
     app.use((req, res, next) => {
         if (req.method === 'OPTIONS' || req.path === '/health' || req.path === '/' || req.path === '/health/details' || req.path === '/metrics') return next();
+        if (multiUserEnabled && (req.path === '/admin/keys' || req.path.startsWith('/admin/keys/'))) return next();
         if (req.path === '/panel' || req.path === '/panel/data.json') {
             // Disabled panel: the routes do not exist (404) regardless of auth.
             if (!WEB_PANEL_ENABLED) {
@@ -600,67 +899,44 @@ export function createApp(config) {
             // auth (PUBLIC_DIAGNOSTICS / Bearer) inside its handler.
             if (req.method === 'GET') return next();
         }
-        if (API_KEY && API_KEY.trim() !== '') {
-            const expectedKey = API_KEY.trim();
-            const safeEquals = (candidate) => {
-                if (typeof candidate !== 'string' || !candidate) return false;
-                const bufA = Buffer.from(candidate);
-                const bufB = Buffer.from(expectedKey);
-                if (bufA.length !== bufB.length) {
-                    const hashA = crypto.createHash('sha256').update(bufA).digest();
-                    const hashB = crypto.createHash('sha256').update(bufB).digest();
-                    crypto.timingSafeEqual(hashA, hashB);
-                    return false;
-                }
-                return crypto.timingSafeEqual(bufA, bufB);
-            };
-            const authHeader = req.headers.authorization;
-            const bearerToken = (typeof authHeader === 'string' && authHeader.startsWith('Bearer '))
-                ? authHeader.slice('Bearer '.length).trim()
-                : '';
-            const bearerOk = safeEquals(bearerToken);
-            // Anthropic Messages clients authenticate via x-api-key; scope it to
-            // /v1/messages so the OpenAI-compatible endpoints stay Bearer-only.
-            const xApiKey = typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'].trim() : '';
-            const anthropicApiKeyOk = req.path === '/v1/messages' && safeEquals(xApiKey);
-            if (!bearerOk && !anthropicApiKeyOk) {
-                if (req.path === '/v1/messages') {
-                    return res.status(401).json({
-                        type: 'error',
-                        error: { type: 'authentication_error', message: 'invalid x-api-key' }
-                    });
-                }
-                return res.status(401).json({ error: { message: 'Unauthorized' } });
+        const token = extractBearerToken(req);
+        // Anthropic Messages clients authenticate via x-api-key; scope it to
+        // /v1/messages so the OpenAI-compatible endpoints stay Bearer-only.
+        const xApiKey = req.path === '/v1/messages' && typeof req.headers['x-api-key'] === 'string'
+            ? req.headers['x-api-key'].trim()
+            : '';
+        const candidateToken = token || xApiKey || null;
+        const rejectUnauthorized = () => {
+            if (req.path === '/v1/messages') {
+                return res.status(401).json({
+                    type: 'error',
+                    error: { type: 'authentication_error', message: 'invalid x-api-key' }
+                });
             }
+            return res.status(401).json({ error: { message: 'Unauthorized' } });
+        };
+        if (multiUserEnabled) {
+            // API_KEYS hit wins and tags the request for per-key metering.
+            const matchedUserKeyName = findMatchingUserKeyName(candidateToken);
+            if (matchedUserKeyName) {
+                req.apiKeyName = matchedUserKeyName;
+                return next();
+            }
+        }
+        if (API_KEY && API_KEY.trim() !== '') {
+            // Fall back to the legacy single key (old deployments are unaffected;
+            // /admin/keys uses this same master key as its admin credential).
+            if (candidateToken && safeTokenEquals(candidateToken, API_KEY.trim())) {
+                req.apiKeyName = MASTER_KEY_NAME;
+                return next();
+            }
+            return rejectUnauthorized();
+        }
+        if (multiUserEnabled) {
+            return rejectUnauthorized();
         }
         next();
     });
-
-    // Shared gate for the panel and diagnostics endpoints: PUBLIC_DIAGNOSTICS
-    // lifts auth, an empty API_KEY means the proxy has no auth at all, and a
-    // configured API_KEY requires the exact Bearer value (constant-time).
-    const hasValidBearerAuth = (req) => {
-        if (!API_KEY || API_KEY.trim() === '') return true;
-        const authHeader = req.headers.authorization;
-        if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) return false;
-        const token = authHeader.slice('Bearer '.length).trim();
-        if (!token) return false;
-        const bufA = Buffer.from(token);
-        const bufB = Buffer.from(API_KEY.trim());
-        if (bufA.length !== bufB.length) {
-            const hashA = crypto.createHash('sha256').update(bufA).digest();
-            const hashB = crypto.createHash('sha256').update(bufB).digest();
-            crypto.timingSafeEqual(hashA, hashB);
-            return false;
-        }
-        return crypto.timingSafeEqual(bufA, bufB);
-    };
-
-    const shouldAllowOperationalEndpoint = (req, { enabled }) => {
-        if (!enabled) return false;
-        if (PUBLIC_DIAGNOSTICS) return true;
-        return hasValidBearerAuth(req);
-    };
 
     const getProvidersList = async () => {
         const providersRes = await client.config.providers();
@@ -1753,6 +2029,16 @@ export function createApp(config) {
                 try {
                     const { messages, model, tools = [], tool_choice, stream: requestStream, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, stop, reasoning_effort, reasoning, opencode: requestOpencodeConfig } = req.body;
                     stream = Boolean(requestStream);
+                    // Multi-user metering: count the request against the key that
+                    // authenticated it (even when the turn later fails — failed
+                    // requests count toward `requests` but never toward tokens).
+                    keyUsage.trackRequest(req.apiKeyName);
+                    let usageMetered = false;
+                    const meterUsage = ({ promptTokens, completionTokens }) => {
+                        if (usageMetered) return;
+                        usageMetered = true;
+                        keyUsage.trackUsage(req.apiKeyName, { promptTokens, completionTokens });
+                    };
                     if (!messages || !Array.isArray(messages) || messages.length === 0) {
                         return res.status(400).json({ error: { message: 'messages array is required' } });
                     }
@@ -2323,7 +2609,8 @@ export function createApp(config) {
                         const billedPromptText = reuseParts ? reuseParts.map((p) => p.text || '').join('\n\n') : fullPromptText;
                         const promptTokens = Math.ceil((billedPromptText || '').length / 4);
                         const totalTokens = promptTokens + completionTokens + reasoningTokens;
-                        
+                        meterUsage({ promptTokens, completionTokens: completionTokens + reasoningTokens });
+
                         res.write(`data: ${JSON.stringify({ 
                             id, 
                             choices: [{ index: 0, delta: {}, finish_reason: finalStreamedToolCalls.length > 0 ? 'tool_calls' : 'stop' }],
@@ -2418,6 +2705,7 @@ export function createApp(config) {
                         const completionTokensCalc = Math.ceil((content || '').length / 4);
                         const reasoningTokensCalc = Math.ceil((reasoning || '').length / 4);
                         const totalTokens = promptTokens + completionTokensCalc + reasoningTokensCalc;
+                        meterUsage({ promptTokens, completionTokens: completionTokensCalc + reasoningTokensCalc });
 
                         const publicValidatedToolCalls = toPublicToolCalls(validatedToolCalls);
                         // Reasoning is emitted in its own `reasoning_content` field so clients
@@ -2493,6 +2781,29 @@ export function createApp(config) {
         }
     });
 
+    const resolveDiagnosticsCaller = (req) => {
+        if (!adminAuthEnabled && !multiUserEnabled) {
+            return { allowed: true, role: 'admin', keyName: null };
+        }
+        const token = extractBearerToken(req);
+        if (adminAuthEnabled && token && safeTokenEquals(token, API_KEY.trim())) {
+            return { allowed: true, role: 'admin', keyName: MASTER_KEY_NAME };
+        }
+        const matchedUserKeyName = findMatchingUserKeyName(token);
+        if (matchedUserKeyName) {
+            return { allowed: true, role: 'user', keyName: matchedUserKeyName };
+        }
+        if (PUBLIC_DIAGNOSTICS) {
+            return { allowed: true, role: 'public', keyName: null };
+        }
+        return { allowed: false, role: 'none', keyName: null };
+    };
+
+    const shouldAllowOperationalEndpoint = (req, { enabled }) => {
+        if (!enabled) return false;
+        return resolveDiagnosticsCaller(req).allowed;
+    };
+
     // Anthropic Messages API endpoint
     app.post('/v1/messages', async (req, res) => {
         try {
@@ -2513,6 +2824,13 @@ export function createApp(config) {
                     const body = req.body || {};
                     const { model, messages, system, stream: requestStream } = body;
                     stream = Boolean(requestStream);
+                    keyUsage.trackRequest(req.apiKeyName);
+                    let usageMetered = false;
+                    const meterUsage = ({ promptTokens, completionTokens }) => {
+                        if (usageMetered) return;
+                        usageMetered = true;
+                        keyUsage.trackUsage(req.apiKeyName, { promptTokens, completionTokens });
+                    };
 
                     if (!Array.isArray(messages) || messages.length === 0) {
                         return anthropicError(400, 'invalid_request_error', 'messages: messages must be a non-empty array');
@@ -3087,6 +3405,7 @@ export function createApp(config) {
                             delta: { stop_reason: anthropicStopReason(validatedToolCalls.length), stop_sequence: null },
                             usage: { output_tokens: outputTokens }
                         });
+                        meterUsage({ promptTokens, completionTokens: outputTokens });
                         writeEvent({ type: 'message_stop' });
                         res.end();
                     } else {
@@ -3168,6 +3487,7 @@ export function createApp(config) {
                         const promptTokens = Math.ceil((fullPromptText || '').length / 4);
                         const completionTokensCalc = Math.ceil((content || '').length / 4);
                         const reasoningTokensCalc = Math.ceil((reasoning || '').length / 4);
+                        meterUsage({ promptTokens, completionTokens: completionTokensCalc + reasoningTokensCalc });
 
                         res.json({
                             id,
@@ -3232,6 +3552,101 @@ export function createApp(config) {
             }
         }
     });
+
+    // Per-key usage snapshot shared by /admin/keys and /health/details.
+    // In multi-user mode the legacy API_KEY appears as a pseudo-entry so
+    // traffic that fell back to the master key is not invisible.
+    const buildUsageRows = () => {
+        const { byKey, total } = keyUsage.snapshot();
+        const rows = [
+            ...(adminAuthEnabled && (multiUserEnabled) && (byKey[MASTER_KEY_NAME] || keyUsage.entry(MASTER_KEY_NAME)).requests > 0
+                ? [{
+                    name: MASTER_KEY_NAME,
+                    keyHint: keyHintFor(API_KEY || ''),
+                    ...(byKey[MASTER_KEY_NAME] || keyUsage.entry(MASTER_KEY_NAME))
+                }]
+                : []),
+            ...apiKeyEntries
+                .map(({ name, key }) => ({
+                    name,
+                    keyHint: keyHintFor(key),
+                    ...(byKey[name] || keyUsage.entry(name))
+                }))
+        ];
+        return { rows, total };
+    };
+
+    // Admin surface for the multi-user keys. Only mounted when API_KEYS is
+    // configured; every route requires the ADMIN key (the legacy API_KEY —
+    // never a user key) and has no PUBLIC_DIAGNOSTICS bypass. With no API_KEY
+    // there is no admin credential, so the surface answers 501.
+    if (multiUserEnabled) {
+        const requireAdmin = (req, res, next) => {
+            if (!adminAuthEnabled) {
+                return res.status(501).json({
+                    error: {
+                        message: 'Admin API unavailable: set API_KEY (the admin key) to manage multi-user API_KEYS',
+                        type: 'not_implemented_error'
+                    }
+                });
+            }
+            const token = extractBearerToken(req);
+            if (!token || !safeTokenEquals(token, API_KEY.trim())) {
+                return res.status(401).json({ error: { message: 'Unauthorized: admin key required' } });
+            }
+            next();
+        };
+
+        app.get('/admin/keys', requireAdmin, (_req, res) => {
+            res.json(buildUsageRows().rows);
+        });
+
+        app.post('/admin/keys', requireAdmin, (req, res) => {
+            const body = req.body || {};
+            const name = typeof body.name === 'string' ? body.name.trim() : '';
+            const key = typeof body.key === 'string' ? body.key.trim() : '';
+            if (!name || !key) {
+                return res.status(400).json({ error: { message: 'Both "name" and "key" are required' } });
+            }
+            const cleanName = normalizeApiKeyName(name, '');
+            if (!cleanName) {
+                return res.status(400).json({ error: { message: 'Invalid key name' } });
+            }
+            try {
+                validateApiKeyName(cleanName);
+            } catch (err) {
+                return res.status(400).json({ error: { message: err.message } });
+            }
+            if (apiKeyByName.has(cleanName)) {
+                return res.status(400).json({ error: { message: `Key name "${cleanName}" already exists` } });
+            }
+            if (adminAuthEnabled && safeTokenEquals(key, API_KEY.trim())) {
+                return res.status(400).json({ error: { message: 'Key value must not match the admin API_KEY' } });
+            }
+            for (const entry of apiKeyEntries) {
+                if (safeTokenEquals(key, entry.key)) {
+                    return res.status(400).json({ error: { message: 'Key value already exists' } });
+                }
+            }
+            apiKeyEntries.push({ name: cleanName, key });
+            apiKeyByName.set(cleanName, key);
+            keyUsage.register(cleanName);
+            const created = buildUsageRows().rows.find((row) => row.name === cleanName);
+            res.status(201).json(created);
+        });
+
+        app.delete('/admin/keys/:name', requireAdmin, (req, res) => {
+            const name = req.params.name;
+            const index = apiKeyEntries.findIndex((entry) => entry.name === name);
+            if (index === -1) {
+                return res.status(404).json({ error: { message: `Key "${name}" not found` } });
+            }
+            const [removed] = apiKeyEntries.splice(index, 1);
+            apiKeyByName.delete(removed.name);
+            keyUsage.delete(removed.name);
+            res.status(204).end();
+        });
+    }
 
     app.get('/health', (_req, res) => res.json({
         status: 'ok',
@@ -3300,7 +3715,7 @@ export function createApp(config) {
             });
         }
         const metricsSnapshot = { ...internalToolMetrics };
-        res.json({
+        const diagnostics = {
             status: 'ok',
             proxy: true,
             internal_tools: {
@@ -3324,7 +3739,31 @@ export function createApp(config) {
                     ]
                 }
             }
-        });
+        };
+        // Per-key usage only appears in multi-user mode so single-key
+        // deployments keep their exact legacy snapshot shape. Admin callers see
+        // every key; a user key only sees its own row; unauthenticated
+        // PUBLIC_DIAGNOSTICS callers see the aggregate total without key names.
+        if (multiUserEnabled) {
+            const caller = resolveDiagnosticsCaller(req);
+            const { rows, total } = buildUsageRows();
+            const visibleRows = caller.role === 'admin'
+                ? rows
+                : (caller.role === 'user' ? rows.filter((row) => row.name === caller.keyName) : []);
+            const byKey = {};
+            visibleRows.forEach((row) => {
+                byKey[row.name] = {
+                    requests: row.requests,
+                    promptTokens: row.promptTokens,
+                    completionTokens: row.completionTokens,
+                    totalTokens: row.totalTokens,
+                    lastUsedAt: row.lastUsedAt,
+                    createdAt: row.createdAt
+                };
+            });
+            diagnostics.usage = { byKey, total };
+        }
+        res.json(diagnostics);
     });
 
     app.get('/metrics', (req, res) => {
@@ -3349,6 +3788,35 @@ export function createApp(config) {
             `opencode_internal_tool_cache_ids ${cachedToolIds ? cachedToolIds.length : 0}`
         ];
 
+        // Per-key usage counters, only when multi-user keys are configured.
+        // Scoped the same way as /health/details: admin sees all keys, a user
+        // key sees only its own counter, and unauthenticated PUBLIC_DIAGNOSTICS
+        // scrapes omit per-key labels so key names are never leaked publicly.
+        if (multiUserEnabled) {
+            const caller = resolveDiagnosticsCaller(req);
+            const { rows } = buildUsageRows();
+            const visibleRows = caller.role === 'admin'
+                ? rows
+                : (caller.role === 'user' ? rows.filter((row) => row.name === caller.keyName) : []);
+            if (visibleRows.length > 0) {
+                metricsLines.push(
+                    '# HELP opencode_proxy_key_requests_total Count of requests authenticated with each named API key.',
+                    '# TYPE opencode_proxy_key_requests_total counter'
+                );
+                visibleRows.forEach((row) => {
+                    metricsLines.push(`opencode_proxy_key_requests_total{key="${escapePrometheusLabel(row.name)}"} ${row.requests}`);
+                });
+                metricsLines.push(
+                    '# HELP opencode_proxy_key_tokens_total Tokens billed per named API key and type (prompt/completion, reasoning included in completion).',
+                    '# TYPE opencode_proxy_key_tokens_total counter'
+                );
+                visibleRows.forEach((row) => {
+                    metricsLines.push(`opencode_proxy_key_tokens_total{key="${escapePrometheusLabel(row.name)}",type="prompt"} ${row.promptTokens}`);
+                    metricsLines.push(`opencode_proxy_key_tokens_total{key="${escapePrometheusLabel(row.name)}",type="completion"} ${row.completionTokens}`);
+                });
+            }
+        }
+
         res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
         res.send(`${metricsLines.join('\n')}\n`);
     });
@@ -3372,6 +3840,15 @@ export function createApp(config) {
                 previous_response_id: previousResponseId,
                 opencode: requestOpencodeConfig
             } = req.body;
+
+            // Multi-user metering: failed requests still count toward `requests`.
+            keyUsage.trackRequest(req.apiKeyName);
+            let usageMetered = false;
+            const meterUsage = ({ promptTokens, completionTokens }) => {
+                if (usageMetered) return;
+                usageMetered = true;
+                keyUsage.trackUsage(req.apiKeyName, { promptTokens, completionTokens });
+            };
 
             // Stateful continuation: reuse the session behind a previous response so the
             // client only needs to send the new turn (OpenAI Responses API semantics).
@@ -3923,6 +4400,7 @@ export function createApp(config) {
                 const promptTokens = Math.ceil(fullPromptText.length / 4);
                 const completionTokens = Math.ceil(content.length / 4);
                 const reasoningTokens = Math.ceil(reasoning.length / 4);
+                meterUsage({ promptTokens, completionTokens: completionTokens + reasoningTokens });
                 const response = {
                     id: responseId,
                     object: 'response',
@@ -3994,6 +4472,7 @@ export function createApp(config) {
             const promptTokens = Math.ceil(fullPromptText.length / 4);
             const completionTokens = Math.ceil(content.length / 4);
             const reasoningTokens = Math.ceil(reasoning.length / 4);
+            meterUsage({ promptTokens, completionTokens: completionTokens + reasoningTokens });
             const output = [];
             const messageOutputItem = buildResponsesMessageOutputItem(safeContent);
             if (messageOutputItem) output.push(messageOutputItem);
@@ -4296,6 +4775,7 @@ export function startProxy(options) {
     const config = {
         PORT: options.PORT || 10000,
         API_KEY: options.API_KEY || '',
+        API_KEYS: options.API_KEYS !== undefined ? options.API_KEYS : (process.env.OPENCODE_API_KEYS || []),
         OPENCODE_SERVER_URL: options.OPENCODE_SERVER_URL || 'http://127.0.0.1:10001',
         OPENCODE_SERVER_PASSWORD: options.OPENCODE_SERVER_PASSWORD || process.env.OPENCODE_SERVER_PASSWORD || '',
         OPENCODE_PATH: options.OPENCODE_PATH || 'opencode',

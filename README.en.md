@@ -152,6 +152,7 @@ The response contains a `{"type":"tool_use","id":"…","name":"web_fetch","input
 | Environment variable | Default | Description |
 |:--------|:-------|:-----|
 | `API_KEY` | (empty) | Proxy Bearer auth key |
+| `OPENCODE_API_KEYS` | (empty) | Multi-user API key list, comma-separated `name:key` (see [Configuration](./docs/en/configuration.md)) |
 | `OPENCODE_SERVER_PASSWORD` | (empty) | OpenCode backend password |
 | `OPENCODE_PROXY_PORT` / `PORT` | `10000` | Proxy port |
 | `OPENCODE_SERVER_PORT` | `10001` | Backend port (applies when `OPENCODE_SERVER_URL` is not set) |
@@ -190,10 +191,15 @@ OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS=true
 | `POST` | `/v1/chat/completions` | Chat Completions |
 | `POST` | `/v1/responses` | Responses API |
 | `POST` | `/v1/messages` | Anthropic Messages API (Claude SDK compatible) |
+| `GET` | `/admin/keys` | Multi-user key list and usage (admin auth, available once `API_KEYS` is configured) |
+| `POST` | `/admin/keys` | Add a user key at runtime (admin auth) |
+| `DELETE` | `/admin/keys/:name` | Remove a user key (admin auth) |
 
 Model names: `opencode/big-pickle`, `gpt5-nano` (auto-resolved to `gpt-5-nano`), `opencode/gpt5-nano`.
 
 > 📖 See [API Reference](./docs/en/api-reference.md)
+>
+> 👥 Full details on multi-user keys, per-key usage metering, and the admin endpoints: [Configuration](./docs/en/configuration.md#-multi-user-api-keys).
 
 ## 🖥️ Web Panel
 
