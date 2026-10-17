@@ -9,7 +9,8 @@
     "test": "NODE_OPTIONS=--experimental-vm-modules jest tests/unit --runInBand --detectOpenHandles",
     "test:unit": "NODE_OPTIONS=--experimental-vm-modules jest tests/unit --runInBand --detectOpenHandles",
     "test:integration": "bash tests/integration/test-integration.sh",
-    "test:stream": "bash tests/manual/test-streaming-real.sh"
+    "test:stream": "bash tests/manual/test-streaming-real.sh",
+    "test:egress": "node --test tests/egress/*.test.js"
   },
   "keywords": [
     "opencode",
@@ -31,7 +32,9 @@
     "axios": "^1.7.9",
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "https-proxy-agent": "^7.0.6",
+    "socks-proxy-agent": "^8.0.5"
   },
   "devDependencies": {
     "jest": "^30.2.0",

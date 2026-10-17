@@ -180,6 +180,12 @@ OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS=true
 
 ## 🔌 API 端点
 
+### 可选：出站代理池
+
+支持 HTTP / HTTPS / SOCKS 出口，在 429、网络失败和服务端错误时有限重试并切换出口，
+只影响本项目的 OpenCode 后端。默认关闭；不修改系统代理或现有 Mihomo。
+配置方式和隐私注意事项见 [代理池配置](./docs/zh/proxy-pool.md)。
+
 | 方法 | 路径 | 说明 |
 |:-----|:-----|:-----|
 | `GET` | `/health` | 健康检查 |

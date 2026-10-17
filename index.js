@@ -3,6 +3,8 @@ import { parseApiKeysConfig } from './src/proxy.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createGateway } from './src/egress/gateway.js';
+import { loadPoolConfig, buildPoolBackendConfig } from './src/egress/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -200,13 +202,33 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // Start the proxy
+let egressGateway;
 try {
+    const poolFile = process.env.OPENCODE_PROXY_POOL_CONFIG || fileConfig.PROXY_POOL_CONFIG;
+    if (poolFile) {
+        if (!finalConfig.MANAGE_BACKEND) throw new Error('Proxy pool requires MANAGE_BACKEND=true');
+        const pool = loadPoolConfig(poolFile);
+        if ([finalConfig.PORT, Number(new URL(finalConfig.OPENCODE_SERVER_URL).port)].includes(pool.listenPort)) {
+            throw new Error('Proxy pool port conflicts with proxy/backend port');
+        }
+        const backendConfig = buildPoolBackendConfig(process.env.OPENCODE_CONFIG_CONTENT, pool.listenPort);
+        egressGateway = createGateway(pool);
+        await new Promise((resolve, reject) => {
+            egressGateway.once('error', reject);
+            egressGateway.listen(pool.listenPort, '127.0.0.1', resolve);
+        });
+        // Only the backend child inherits this override; no global proxy or DNS changes.
+        process.env.OPENCODE_CONFIG_CONTENT = backendConfig;
+        console.log(`[Pool] Enabled with ${pool.nodes.filter(n => n.enabled).length} exits on loopback:${pool.listenPort}`);
+    }
     const proxy = startProxy(finalConfig);
     
     // Handle graceful shutdown
     process.on('SIGINT', () => {
         console.log('\n[Shutdown] Received SIGINT, shutting down gracefully...');
         proxy.killBackend();
+        egressGateway?.close();
+        egressGateway?.closeAllConnections();
         proxy.server.close(() => {
             console.log('[Shutdown] Server closed');
             process.exit(0);
@@ -216,6 +238,8 @@ try {
     process.on('SIGTERM', () => {
         console.log('\n[Shutdown] Received SIGTERM, shutting down gracefully...');
         proxy.killBackend();
+        egressGateway?.close();
+        egressGateway?.closeAllConnections();
         proxy.server.close(() => {
             console.log('[Shutdown] Server closed');
             process.exit(0);

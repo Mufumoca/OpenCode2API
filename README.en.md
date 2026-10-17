@@ -1,5 +1,13 @@
 # OpenCode2API
 
+Optional isolated outbound proxy pools are supported through
+`OPENCODE_PROXY_POOL_CONFIG=./proxy-pool.json`. Copy `proxy-pool.example.json`
+and supply your own HTTP/HTTPS/SOCKS exits. The pool retries 429, 408, 5xx and
+connection failures on distinct exits before forwarding response headers;
+it never replays an already-started stream or changes system proxy settings.
+Private pool files are excluded from Git and Docker builds. See the
+[configuration guide](./docs/zh/proxy-pool.md) for limits, Docker and Mihomo.
+
 <p align="center">
   <img src="https://img.shields.io/badge/version-2.5.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">

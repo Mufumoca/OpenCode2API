@@ -11,3 +11,7 @@ tests
 *.log
 .env
 .env.*
+proxy-pool*.json
+private
+*.local.yaml
+*.local.yml

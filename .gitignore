@@ -6,3 +6,10 @@ yarn-debug.log*
 yarn-error.log*
 .env
 config.json
+.env.*
+!.env.example
+proxy-pool*.json
+!proxy-pool.example.json
+private/
+*.local.yaml
+*.local.yml

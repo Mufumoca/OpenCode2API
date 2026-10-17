@@ -1,0 +1,11 @@
+{
+  "listenPort": 18100,
+  "maxAttempts": 3,
+  "cooldownMs": 60000,
+  "firstByteTimeoutMs": 60000,
+  "streamIdleTimeoutMs": 120000,
+  "nodes": [
+    { "name": "exit-a", "proxy": "http://127.0.0.1:18110", "enabled": true },
+    { "name": "exit-b", "proxy": "socks5h://127.0.0.1:18111", "enabled": true }
+  ]
+}
