@@ -1,13 +1,5 @@
 # OpenCode2API
 
-Optional isolated outbound proxy pools are supported through
-`OPENCODE_PROXY_POOL_CONFIG=./proxy-pool.json`. Copy `proxy-pool.example.json`
-and supply your own HTTP/HTTPS/SOCKS exits. The pool retries 429, 408, 5xx and
-connection failures on distinct exits before forwarding response headers;
-it never replays an already-started stream or changes system proxy settings.
-Private pool files are excluded from Git and Docker builds. See the
-[configuration guide](./docs/zh/proxy-pool.md) for limits, Docker and Mihomo.
-
 <p align="center">
   <img src="https://img.shields.io/badge/version-2.5.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
@@ -16,7 +8,11 @@ Private pool files are excluded from Git and Docker builds. See the
 
 English | [简体中文](./README.md)
 
-Turns a local [OpenCode](https://opencode.ai) runtime into an OpenAI-compatible API gateway, so any client can use unlimited free OpenCode Zen models.
+Turns a local [OpenCode](https://opencode.ai) runtime into an OpenAI-compatible API gateway, for compatible clients and New API.
+
+This fork of [TiaraBasori/opencode2api](https://github.com/TiaraBasori/opencode2api) adds an **isolated outbound proxy pool with automatic failover**. It does not change system proxy settings or other services.
+
+> Model availability and rate limits are controlled by the upstream. Free does not mean unlimited; changing exits may not resolve account- or model-level limits.
 
 ## ✨ Features
 
@@ -27,6 +23,7 @@ Turns a local [OpenCode](https://opencode.ai) runtime into an OpenAI-compatible 
 - **Built-in tool allowlist** — requests without `tools` only allow built-ins listed in `OPENCODE_INTERNAL_ALLOWED_TOOLS`
 - **Observability** — `/health/details` structured diagnostics, `/metrics` Prometheus metrics
 - **Web Panel** — optional built-in dashboard at `/panel` (read-only status/models/diagnostics), off by default
+- **Isolated proxy pool** — HTTP/HTTPS/SOCKS exits, bounded retries on 429/408/5xx and network failures, cooldowns, no replay of started streams
 - **Docker deployment** — one command starts the stack and the OpenCode backend
 
 ## 🚀 Quick Start
@@ -34,12 +31,14 @@ Turns a local [OpenCode](https://opencode.ai) runtime into an OpenAI-compatible 
 ### Docker (recommended)
 
 ```bash
-git clone https://github.com/TiaraBasori/opencode2api.git
-cd opencode2api
+git clone https://github.com/Mufumoca/OpenCode2API.git
+cd OpenCode2API
 cp .env.example .env        # Edit .env; API_KEY and OPENCODE_SERVER_PASSWORD are required
-docker compose up -d
+docker compose up -d --build
 curl http://127.0.0.1:10000/health
 ```
+
+> Use `--build` to build this fork rather than using an upstream image without these additions.
 
 > The default Compose file does not mount the host project directory, since that would shadow the `node_modules` baked into the image. Use a separate dev Compose override for source hot-reload.
 
@@ -50,8 +49,8 @@ curl http://127.0.0.1:10000/health
 npm install -g opencode-ai@1.19.0
 # or curl -fsSL https://opencode.ai/install | bash
 
-git clone https://github.com/TiaraBasori/opencode2api.git
-cd opencode2api
+git clone https://github.com/Mufumoca/OpenCode2API.git
+cd OpenCode2API
 npm install
 cp config.json.example config.json
 npm start
@@ -171,6 +170,7 @@ The response contains a `{"type":"tool_use","id":"…","name":"web_fetch","input
 | `OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS` | `false` | Auto-clean session storage |
 | `OPENCODE_USE_ISOLATED_HOME` | `false` | Use an isolated OpenCode config directory |
 | `OPENCODE_WEB_PANEL_ENABLED` | `false` | Serve the built-in Web Panel at `/panel` |
+| `OPENCODE_PROXY_POOL_CONFIG` | (empty, disabled) | Path to a private proxy pool JSON file |
 | `OPENCODE_PROXY_DEBUG` | `false` | Debug logging |
 
 > 📄 Full reference: [Configuration](./docs/en/configuration.md)
@@ -185,6 +185,51 @@ OPENCODE_INTERNAL_ALLOWED_TOOLS=web_fetch
 OPENCODE_PROXY_OMIT_SYSTEM_PROMPT=true
 OPENCODE_PROXY_AUTO_CLEANUP_CONVERSATIONS=true
 ```
+
+## Outbound Proxy Pool
+
+Disabled by default. Provide your own HTTP/HTTPS/SOCKS proxies, then run:
+
+```bash
+cp proxy-pool.example.json proxy-pool.json
+# Edit proxy-pool.json with your own proxy endpoints
+chmod 600 proxy-pool.json
+OPENCODE_PROXY_POOL_CONFIG=./proxy-pool.json npm start
+```
+
+The example uses placeholder loopback proxy endpoints, not working nodes.
+Alternatively set `PROXY_POOL_CONFIG` in config.json. Requires
+`MANAGE_BACKEND=true` and a newly started backend managed by this project.
+Only the child OpenCode process's `opencode` provider is redirected.
+
+- Keep the healthy current exit; switch on 429, 408, 5xx, connection failures or first-response timeout.
+- Default: up to three distinct exits per upstream HTTP request; 60-second cooldown, extended by Retry-After.
+- Do not retry request/authentication errors such as 400/401/403, or replay responses after forwarding headers.
+- Return 503 with Retry-After when no exit is eligible; never fall back to direct access.
+- Concurrent connections retain their own fixed proxy agents. OpenCode/API-layer retries may add further attempts.
+- Lost responses may lead to duplicate inference/billing on retry; switching IPs does not guarantee recovery from limits.
+
+Mihomo users can run a separate instance with fixed-node HTTP/SOCKS listeners,
+TUN/DNS disabled, without changing existing selectors or system routing.
+The pool does not import subscriptions or include any usable nodes.
+
+Inspect `http://127.0.0.1:18100/health` locally; never expose the pool gateway
+publicly. The Web Panel is read-only and does not edit pool configuration.
+Private pool files are excluded from Git/Docker builds, but always inspect
+staged changes and never force-add credentials.
+
+For Docker, mount private configuration read-only and use proxy addresses
+reachable from inside the container: container loopback is not host loopback.
+See the [pool guide (Chinese)](./docs/zh/proxy-pool.md) for examples and all limits.
+
+## New API Integration
+
+Create an OpenAI-compatible channel with base URL `http://127.0.0.1:10000`
+(without `/v1`, when both services share host networking), the proxy's
+`API_KEY`, and model IDs from `/v1/models`. Use private service addresses
+instead of loopback across containers. Configure model pricing explicitly;
+free upstream models do not automatically imply zero New API charges.
+Clients keep using their New API URL/token; pool failover is transparent.
 
 ## 🔌 API Endpoints
 
@@ -240,6 +285,7 @@ MIT · see [LICENSE](./LICENSE.md)
 
 ## 🙏 Acknowledgements
 
+- [TiaraBasori/opencode2api](https://github.com/TiaraBasori/opencode2api) — upstream project
 - [dxxzst/opencode-to-openai](https://github.com/dxxzst/opencode-to-openai)
 - [jasonxu114514/opencode2api](https://github.com/jasonxu114514/opencode2api)
 - [lucasliet/opencode-openai-proxy](https://github.com/lucasliet/opencode-openai-proxy)
