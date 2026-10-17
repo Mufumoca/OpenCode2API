@@ -28,21 +28,26 @@ export function retryDelay(header, fallback, now = Date.now()) {
 export function createGateway(config, { agentFactory = createProxyAgent,
     logger = console.log } = {}) {
     const nodes = config.nodes.filter(n => n.enabled !== false).map(n => ({ ...n, agent: agentFactory(n), cooldownUntil: 0,
-        successes: 0, failures: 0, active: 0 }));
+        successes: 0, failures: 0, consecutiveFailures: 0, active: 0 }));
     if (!nodes.length) throw new Error('At least one proxy node is required');
     let cursor = 0;
+    let lastSelected = null;
+    const failureThreshold = config.failureThreshold || 2;
     const maxAttempts = config.maxAttempts || 3;
     const cooldown = config.cooldownMs || 60000;
     const upstream = new URL(config.upstream);
     const transport = upstream.protocol === 'https:' ? https : http;
     const retryable = status => status === 429 || status === 408 || status >= 500;
 
-    function select(tried) {
+    function select(tried, reserve = true) {
         for (let i = 0; i < nodes.length; i++) {
             const index = (cursor + i) % nodes.length;
             const node = nodes[index];
             if (!tried.has(node) && node.cooldownUntil <= Date.now()) {
-                cursor = index;
+                if (reserve) {
+                    cursor = (index + 1) % nodes.length;
+                    lastSelected = node.name;
+                }
                 return node;
             }
         }
@@ -51,11 +56,12 @@ export function createGateway(config, { agentFactory = createProxyAgent,
 
     function fail(node, status, retryAfter) {
         node.failures++;
-        node.cooldownUntil = Date.now() + retryDelay(retryAfter, cooldown);
-        const index = nodes.indexOf(node);
-        if (cursor === index) cursor = (index + 1) % nodes.length;
+        node.consecutiveFailures++;
+        if (status === 429 || node.consecutiveFailures >= failureThreshold) {
+            node.cooldownUntil = Date.now() + retryDelay(retryAfter, cooldown);
+        }
         logger(JSON.stringify({ event: 'egress_failure', node: node.name,
-            status, cooldownUntil: new Date(node.cooldownUntil).toISOString() }));
+            status, consecutiveFailures: node.consecutiveFailures, cooldownUntil: node.cooldownUntil ? new Date(node.cooldownUntil).toISOString() : null }));
     }
 
     function sendError(res, status, message) {
@@ -68,9 +74,9 @@ export function createGateway(config, { agentFactory = createProxyAgent,
     const server = http.createServer(async (req, res) => {
         if (req.url === '/health' && req.method === 'GET') {
             res.setHeader('content-type', 'application/json');
-            res.end(JSON.stringify({ status: 'ok', current: nodes[cursor].name,
-                nodes: nodes.map(({ name, cooldownUntil, successes, failures, active }) =>
-                    ({ name, cooldownUntil, successes, failures, active })) }));
+            res.end(JSON.stringify({ status: 'ok', strategy: 'round-robin', current: lastSelected, next: nodes[cursor].name,
+                nodes: nodes.map(({ name, cooldownUntil, successes, failures, consecutiveFailures, active }) =>
+                    ({ name, cooldownUntil, successes, failures, consecutiveFailures, active })) }));
             return;
         }
         // This is a fixed-host reverse proxy, never an arbitrary URL/CONNECT proxy.
@@ -137,7 +143,7 @@ export function createGateway(config, { agentFactory = createProxyAgent,
                 const status = response.statusCode || 502;
                 if (retryable(status)) {
                     fail(node, status, response.headers['retry-after']);
-                    if (attempt < maxAttempts && select(tried)) {
+                    if (attempt < maxAttempts && select(tried, false)) {
                         node.active--;
                         response.destroy();
                         logger(JSON.stringify({ event: 'egress_retry', node: node.name, status, attempt }));
@@ -152,7 +158,11 @@ export function createGateway(config, { agentFactory = createProxyAgent,
                 try {
                     // Once headers/body reach OpenCode, replay is forbidden, including broken SSE.
                     await pipeline(response, res, { signal: controller.signal });
-                    if (status < 400) node.successes++;
+                    if (status < 400) {
+                        node.successes++;
+                        node.consecutiveFailures = 0;
+                        node.cooldownUntil = 0;
+                    }
                 } catch {
                     if (!controller.signal.aborted && !retryable(status)) fail(node, 'stream');
                     if (!res.destroyed) res.destroy();

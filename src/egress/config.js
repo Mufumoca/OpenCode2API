@@ -32,6 +32,7 @@ export function validatePoolConfig(raw) {
         upstream: 'https://opencode.ai', nodes,
         listenPort: integer('listenPort', 18100, 1, 65535),
         maxAttempts: integer('maxAttempts', 3, 1, 10),
+        failureThreshold: integer('failureThreshold', 2, 1, 10),
         cooldownMs: integer('cooldownMs', 60000, 1000, 86400000),
         firstByteTimeoutMs: integer('firstByteTimeoutMs', 60000, 1000, 300000),
         streamIdleTimeoutMs: integer('streamIdleTimeoutMs', 120000, 1000, 600000)

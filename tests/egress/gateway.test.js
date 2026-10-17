@@ -49,7 +49,7 @@ test('401 does not switch or retry', async t => {
 
 test('5xx bounded to three distinct exits then pool cooldown', async t => {
     let calls = 0;
-    const url = await fixture(t, (req, res) => { calls++; res.writeHead(503); res.end('busy'); }, { cooldownMs: 60000 });
+    const url = await fixture(t, (req, res) => { calls++; res.writeHead(503); res.end('busy'); }, { cooldownMs: 60000, failureThreshold: 1 });
     const res = await fetch(url + '/inference/test');
     assert.equal(res.status, 503); await res.text(); assert.equal(calls, 3);
     const second = await fetch(url + '/inference/test');
@@ -84,4 +84,28 @@ test('Retry-After numeric and HTTP date parsing', () => {
     assert.equal(retryDelay('120', 1000, 0), 120000);
     assert.equal(retryDelay('Thu, 01 Jan 1970 00:02:00 GMT', 1000, 0), 120000);
     assert.equal(retryDelay('invalid', 1000, 0), 1000);
+});
+
+
+test('round robin cycles through every exit even after success', async t => {
+    const url = await fixture(t, (req, res) => res.end('OK'));
+    const selected = [];
+    for (let i = 0; i < 5; i++) {
+        assert.equal(await (await fetch(url + '/inference/test')).text(), 'OK');
+        selected.push((await (await fetch(url + '/health')).json()).current);
+    }
+    assert.deepEqual(selected, ['a', 'b', 'c', 'a', 'b']);
+});
+
+test('repeated failures cool down node and expiry returns it to rotation', async t => {
+    const url = await fixture(t, (req, res) => { res.writeHead(503); res.end('busy'); },
+        { maxAttempts: 1, failureThreshold: 2, cooldownMs: 100 });
+    for (let i = 0; i < 6; i++) await (await fetch(url + '/inference/test')).text();
+    let health = await (await fetch(url + '/health')).json();
+    assert.ok(health.nodes.every(n => n.consecutiveFailures === 2 && n.cooldownUntil > Date.now()));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    await (await fetch(url + '/inference/test')).text();
+    health = await (await fetch(url + '/health')).json();
+    assert.equal(health.current, 'a');
+    assert.equal(health.nodes[0].failures, 3);
 });

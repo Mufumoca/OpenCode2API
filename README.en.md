@@ -202,8 +202,8 @@ Alternatively set `PROXY_POOL_CONFIG` in config.json. Requires
 `MANAGE_BACKEND=true` and a newly started backend managed by this project.
 Only the child OpenCode process's `opencode` provider is redirected.
 
-- Keep the healthy current exit; switch on 429, 408, 5xx, connection failures or first-response timeout.
-- Default: up to three distinct exits per upstream HTTP request; 60-second cooldown, extended by Retry-After.
+- Rotate through eligible exits on every new request, wrapping at the end; failures retry on the next exit.
+- Default: three distinct exits per request; two consecutive failures trigger a 60-second cooldown (`failureThreshold`), while 429 cools down immediately and honors Retry-After. Success resets the streak; expired nodes rejoin rotation.
 - Do not retry request/authentication errors such as 400/401/403, or replay responses after forwarding headers.
 - Return 503 with Retry-After when no exit is eligible; never fall back to direct access.
 - Concurrent connections retain their own fixed proxy agents. OpenCode/API-layer retries may add further attempts.
